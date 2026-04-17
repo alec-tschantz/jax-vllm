@@ -101,7 +101,7 @@ Representative on MI300X, Qwen2.5-32B bf16, 40 new tokens:
 | concurrency | jllm tok/s | vLLM tok/s | ratio |
 |---|---|---|---|
 | 1 | 27 | 57 | 47% |
-| 4 | 93 | 189 | 49% |
+| 4 | 98 | 187 | 52% |
 
 The gap is kernel-level (FlashAttention, fused QKV/RoPE/RMSNorm, graph capture) — not
 cache architecture. Where paging pays off: the `prefix_cache` mode shows warm TTFT
@@ -111,8 +111,11 @@ dropping to ~0.11 s on cached prefixes vs ~0.35 s uncached.
 
 ```
 jllm/
-  model/qwen2.py        # Qwen2 data classes + forward functions
-  model/weights.py      # safetensors → pytree loader
+  config.py             # JllmConfig + apply_jax_env (reads JLLM_* / JAX_* env)
+  model/common.py       # shared: Attention, DecoderLayer, Linear, RMSNorm, ...
+  model/qwen2.py        # Qwen2 / Qwen2.5 config + forward wiring
+  model/qwen3.py        # Qwen3 / Qwen3.5 config + forward wiring (+ qk_norm)
+  model/weights.py      # safetensors → pytree + arch dispatch (load_from_path)
   engine/paged.py       # PagedCache + BlockManager (hash, ref count, LRU)
   engine/generate.py    # extend_step_jit + decode_step_cb_jit
   engine/state.py       # EngineState + pure transitions
