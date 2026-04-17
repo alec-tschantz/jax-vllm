@@ -88,8 +88,9 @@ def _format_transcript(messages: list) -> str:
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--url", default="http://localhost:8080")
-    p.add_argument("--model", default="qwen32b",
-                   help="Model name sent in the /v1/chat/completions payload")
+    p.add_argument("--model", default=None,
+                   help="Model name in the /v1/chat/completions payload. If omitted, "
+                        "derived from the server's /health response.")
     p.add_argument("--max-tokens", type=int, default=1536)
     p.add_argument("--system", default=None,
                    help="Optional system prompt prepended to every conversation")
@@ -100,6 +101,10 @@ def main():
     try:
         with urllib.request.urlopen(f"{args.url}/health", timeout=5) as r:
             health = json.loads(r.read().decode())
+        if args.model is None:
+            # server's "model" field is typically "weights/<ModelName>"
+            raw = health.get("model", "model")
+            args.model = raw.rstrip("/").split("/")[-1] or "model"
         console.print(
             Panel.fit(
                 Text.assemble(

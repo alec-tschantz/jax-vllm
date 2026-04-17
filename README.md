@@ -2,8 +2,9 @@
 
 A minimal, functional reimplementation of the core ideas behind vLLM in pure JAX:
 **continuous batching**, **paged KV cache**, **chunked prefill**, and **content-hash
-prefix caching**. Runs Qwen2.5-32B on a single AMD MI300X via the ROCm JAX backend;
-smaller Qwen2.5 checkpoints also work on CPU.
+prefix caching**. Supports **Qwen2 / Qwen2.5** and **Qwen3 / Qwen3.5** (adding a new
+decoder-only family is a one-file addition under `jllm/model/`). Runs Qwen2.5-32B on
+a single AMD MI300X via the ROCm JAX backend; smaller checkpoints also work on CPU.
 
 ## Install
 
@@ -19,6 +20,9 @@ uv sync --extra dev --extra parity     # adds torch-cpu for HF parity tests
 uv run jllm-serve --model-path weights/Qwen2.5-32B-Instruct --port 8080   # start the server
 uv run python cli.py --url http://localhost:8080                          # streaming chat CLI
 ```
+
+The server dispatches on the HF `architectures` field — `Qwen2ForCausalLM` or
+`Qwen3ForCausalLM` — so `--model-path` can point at either family.
 
 First request JIT-compiles the two kernels (`extend_step`, `decode_step_cb`); later
 requests reuse the compilation. The server also exposes `POST /v1/chat/completions` (OpenAI-
@@ -57,22 +61,28 @@ per config.
 - **Pure functional state.** `EngineState = (cache, positions, last_tokens, block_tables)`
   is a frozen pytree; every transition returns a new state.
 
-Attention: Qwen2 GQA (40 Q heads, 8 KV heads at 32B). An explicit `jnp.repeat` +
-einsum-softmax-einsum beats `jax.nn.dot_product_attention` by 5–13% at B ≤ 4 on ROCm;
-toggle via `ATTENTION_IMPL` in `jllm/model/qwen2.py`. Softmax and RMSNorm accumulate in
-fp32 — matches HF's fp32 greedy output token-for-token on 0.5B.
+Attention: Qwen2 / Qwen3 GQA (e.g. 40 Q heads, 8 KV heads at Qwen2.5-32B). An explicit
+`jnp.repeat` + einsum-softmax-einsum beats `jax.nn.dot_product_attention` by 5–13% at
+B ≤ 4 on ROCm; toggle via the `JLLM_ATTENTION_IMPL` env var. Softmax and RMSNorm
+accumulate in fp32 — matches HF's fp32 greedy output token-for-token on 0.5B / 0.6B.
+Qwen3 additionally applies an RMSNorm to Q and K per-head before RoPE (`q_norm` /
+`k_norm`); Qwen2 leaves those fields as `None`, and both archs share the same
+`Attention` and `DecoderLayer` dataclasses.
 
 ## Tests
 
 ```sh
-uv run pytest tests/
+uv run pytest tests/                                                   # requires weights/
+PARITY_MODEL=weights/Qwen3-0.6B uv run pytest tests/                   # run against Qwen3
 ```
 
-18 tests: HF parity (logits + long rollout), paged primitives (scatter/gather, LRU,
+22 tests: HF parity (logits + long rollout), paged primitives (scatter/gather, LRU,
 hash determinism), engine determinism, slot-output independence of batchmate,
 engine-vs-solo parity, threaded concurrent requests. Feature-engagement assertions use
 a `driver.n_extend_calls` counter — a same-prompt-twice test requires `warm == 0`
 extend_step calls to guard against regressions that silently disable prefix caching.
+The `PARITY_MODEL` env var parameterises the HF-comparison tests; runs clean for both
+`Qwen2.5-0.5B-Instruct` and `Qwen3-0.6B`.
 
 ## Benchmarks vs vLLM
 
