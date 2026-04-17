@@ -1,0 +1,51 @@
+# Python build + caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.cache/
+.coverage
+htmlcov/
+coverage.xml
+.ipynb_checkpoints/
+
+# Virtualenvs + uv
+.venv/
+venv/
+.python-version
+uv.lock
+
+# Build artefacts
+dist/
+build/
+
+# Editors + OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~
+
+# Secrets + local env
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Model weights + scratch
+weights/
+scratch/
+*.safetensors
+*.bin
+*.pt
+*.npz
+
+# JAX / ROCm compilation cache (can be huge)
+.jax_cache/
+jllm-jit-cache/
+jit_cache/

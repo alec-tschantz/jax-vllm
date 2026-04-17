@@ -1,0 +1,52 @@
+[project]
+name = "jax-vllm"
+version = "0.0.1"
+description = "Minimal vLLM-style inference engine in JAX"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "jax>=0.9.1,<0.10",
+    "jaxlib>=0.9.1,<0.10",
+    "equinox>=0.11.4",
+    "safetensors>=0.4.3",
+    "transformers>=4.44",
+    "huggingface-hub>=0.24",
+    "numpy>=1.26",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "rich>=13.7",
+    "jinja2>=3.1",
+]
+
+[project.scripts]
+jllm-serve = "jllm.server:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
+rocm = [
+    "jax-rocm7-plugin==0.9.1.post3",
+    "jax-rocm7-pjrt==0.9.1.post3",
+]
+parity = [
+    "torch>=2.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["jllm"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
