@@ -25,10 +25,22 @@ DEFAULT_PROMPTS = [
 ]
 
 
+def _forward_for(model):
+    """Dispatch to the right forward() by model class — either arch module exposes
+    its own `forward` function (not a method on the eqx.Module)."""
+    from jllm.model.qwen2 import Qwen2Model, forward as forward_qwen2
+    from jllm.model.qwen3 import Qwen3Model, forward as forward_qwen3
+    if isinstance(model, Qwen2Model):
+        return forward_qwen2
+    if isinstance(model, Qwen3Model):
+        return forward_qwen3
+    raise ValueError(f"no forward() for model type {type(model).__name__}")
+
+
 def run_logits(args) -> int:
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    from jllm.model.weights import load_qwen2
+    from jllm.model.weights import load_from_path
 
     tok = AutoTokenizer.from_pretrained(args.model_path)
 
@@ -41,7 +53,7 @@ def run_logits(args) -> int:
     print(f"loading jllm ({args.dtype})...")
     t0 = time.perf_counter()
     jx_dtype = jnp.float32 if args.dtype == "fp32" else jnp.bfloat16
-    jx = load_qwen2(args.model_path, dtype=jx_dtype)
+    jx = load_from_path(args.model_path, dtype=jx_dtype)
     print(f"  loaded in {time.perf_counter()-t0:.1f}s")
 
     max_abs_overall = 0.0
@@ -56,7 +68,8 @@ def run_logits(args) -> int:
 
         jx_ids = jnp.asarray(ids.numpy())
         t0 = time.perf_counter()
-        out = jx(jx_ids)
+        forward = _forward_for(jx)
+        out = forward(jx, jx_ids)
         jx_logits = np.asarray(out[0, -1].astype(jnp.float32))
         jx_dt = time.perf_counter() - t0
 
@@ -82,7 +95,10 @@ def run_logits(args) -> int:
 def run_layer(args) -> int:
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    from jllm.model.weights import load_qwen2
+    from jllm.model.common import embed, linear, rms_norm, rope_cos_sin
+    from jllm.model.weights import load_from_path
+    from jllm.model.qwen2 import Qwen2Model, decoder_layer as dl_qwen2
+    from jllm.model.qwen3 import Qwen3Model, decoder_layer as dl_qwen3
 
     tok = AutoTokenizer.from_pretrained(args.model_path)
     ids_pt = tok(args.prompt, return_tensors="pt").input_ids
@@ -95,21 +111,25 @@ def run_layer(args) -> int:
     hf_hidden = [h.cpu().numpy() for h in hf_out.hidden_states]
     hf_logits = hf_out.logits.cpu().numpy()
 
-    jx = load_qwen2(args.model_path, dtype=jnp.float32)
+    jx = load_from_path(args.model_path, dtype=jnp.float32)
+    dl = dl_qwen2 if isinstance(jx, Qwen2Model) else dl_qwen3
     B, T = ids_np.shape
     position_ids = jnp.broadcast_to(jnp.arange(T), (B, T))
     attention_mask = jnp.ones((B, T), dtype=bool)
     causal = jnp.tril(jnp.ones((T, T), dtype=bool))
     mask = causal[None, None, :, :] & attention_mask[:, None, None, :]
-    hidden = jx.embed_tokens(jnp.asarray(ids_np, dtype=jnp.int32))
-    cos_sin = jx.rotary_emb(position_ids, hidden.dtype)
-    cos_arr, sin_arr = cos_sin
+    hidden = embed(jx.embed_tokens, jnp.asarray(ids_np, dtype=jnp.int32))
+    cos_arr, sin_arr = rope_cos_sin(jx.rotary_emb, position_ids, hidden.dtype)
     jx_hidden = [np.asarray(hidden)]
     for layer in jx.layers:
-        hidden = layer(hidden, cos_arr, sin_arr, mask)
+        hidden = dl(layer, hidden, cos_arr, sin_arr, mask)
         jx_hidden.append(np.asarray(hidden))
-    jx_final = jx.norm(hidden)
-    jx_logits = np.asarray(jx.lm_head(jx_final))
+    jx_final = rms_norm(jx.norm, hidden)
+    # HF's `output_hidden_states` returns the post-final-norm tensor as the last
+    # entry — replace our pre-norm last entry with the normalized version so the
+    # layer-by-layer diff is apples-to-apples.
+    jx_hidden[-1] = np.asarray(jx_final)
+    jx_logits = np.asarray(linear(jx.lm_head, jx_final))
 
     print(f"prompt: {args.prompt!r}  ({T} tokens)")
     print(f"hidden stages HF: {len(hf_hidden)}, jllm: {len(jx_hidden)}")

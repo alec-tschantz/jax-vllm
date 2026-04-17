@@ -7,7 +7,7 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from jllm.model.weights import load_qwen2
+from jllm.model.weights import load_from_path
 
 from ._greedy import greedy
 
@@ -33,7 +33,7 @@ def hf_model():
 
 @pytest.fixture(scope="module")
 def jx_model():
-    return load_qwen2(MODEL_PATH, dtype=jnp.float32)
+    return load_from_path(MODEL_PATH, dtype=jnp.float32)
 
 
 @pytest.mark.parametrize("prompt", PROMPTS)

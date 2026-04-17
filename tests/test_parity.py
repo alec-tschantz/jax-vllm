@@ -7,7 +7,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from jllm.model.qwen2 import forward
-from jllm.model.weights import load_qwen2
+from jllm.model.weights import load_from_path
 
 MODEL_PATH = os.environ.get("PARITY_MODEL", "weights/Qwen2.5-0.5B-Instruct")
 PROMPTS = [
@@ -24,7 +24,7 @@ def hf_model():
 
 @pytest.fixture(scope="module")
 def jx_model():
-    return load_qwen2(MODEL_PATH, dtype=jnp.bfloat16)
+    return load_from_path(MODEL_PATH, dtype=jnp.bfloat16)
 
 
 @pytest.fixture(scope="module")

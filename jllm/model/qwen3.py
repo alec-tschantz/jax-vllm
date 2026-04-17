@@ -1,8 +1,8 @@
-"""Qwen2 / Qwen2.5 wiring.
+"""Qwen3 / Qwen3.5 wiring.
 
-Uses the shared `Attention` / `DecoderLayer` types from common.py: Qwen2 carries
-biases on Q/K/V projections and leaves `q_norm` / `k_norm` as None. Weight
-loading lives in `weights.py::load_qwen2`.
+Uses the shared `Attention` / `DecoderLayer` types from common.py. Qwen3
+populates `q_norm` and `k_norm` (Qwen2 leaves them None) and has bias-free
+Q/K/V projections. Weight loading lives in `weights.py::load_qwen3`.
 """
 import json
 from dataclasses import dataclass
@@ -32,7 +32,7 @@ from .common import (
 
 
 @dataclass(frozen=True)
-class Qwen2Config:
+class Qwen3Config:
     vocab_size: int
     hidden_size: int
     intermediate_size: int
@@ -46,7 +46,7 @@ class Qwen2Config:
     tie_word_embeddings: bool
 
     @classmethod
-    def from_hf(cls, path: "str | Path") -> "Qwen2Config":
+    def from_hf(cls, path: "str | Path") -> "Qwen3Config":
         p = Path(path)
         if p.is_dir():
             p = p / "config.json"
@@ -61,19 +61,19 @@ class Qwen2Config:
             num_kv_heads=c.get("num_key_value_heads", n_heads),
             head_dim=c.get("head_dim", c["hidden_size"] // n_heads),
             rms_norm_eps=c["rms_norm_eps"],
-            rope_theta=c.get("rope_theta", 10000.0),
+            rope_theta=c.get("rope_theta", 1_000_000.0),
             max_position_embeddings=c["max_position_embeddings"],
             tie_word_embeddings=c.get("tie_word_embeddings", False),
         )
 
 
-class Qwen2Model(eqx.Module):
+class Qwen3Model(eqx.Module):
     embed_tokens: Embedding
     layers: list[DecoderLayer]
     norm: RMSNorm
     rotary_emb: RotaryEmbedding
     lm_head: Linear
-    cfg: Qwen2Config
+    cfg: Qwen3Config
 
 
 def attention(a: Attention, hidden: Array, cos: Array, sin: Array, mask: Array) -> Array:
@@ -81,7 +81,7 @@ def attention(a: Attention, hidden: Array, cos: Array, sin: Array, mask: Array) 
     q = linear(a.q_proj, hidden).reshape(B, T, a.num_heads, a.head_dim).transpose(0, 2, 1, 3)
     k = linear(a.k_proj, hidden).reshape(B, T, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
     v = linear(a.v_proj, hidden).reshape(B, T, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
-    q, k = maybe_qk_norm(a, q, k)  # no-op for Qwen2 (q_norm/k_norm are None)
+    q, k = maybe_qk_norm(a, q, k)  # Qwen3 applies q_norm / k_norm here
     q, k = apply_rope(q, k, cos, sin)
     out = attention_kernel(q, k, v, mask, a.head_dim, a.num_heads, a.num_kv_heads)
     out = out.transpose(0, 2, 1, 3).reshape(B, T, -1)
@@ -95,7 +95,7 @@ def decoder_layer(d: DecoderLayer, hidden: Array, cos: Array, sin: Array, mask: 
 
 
 def forward(
-    m: Qwen2Model,
+    m: Qwen3Model,
     input_ids: Array,
     attention_mask: Optional[Array] = None,
     position_ids: Optional[Array] = None,

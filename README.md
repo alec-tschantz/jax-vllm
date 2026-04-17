@@ -24,6 +24,16 @@ First request JIT-compiles the two kernels (`extend_step`, `decode_step_cb`); la
 requests reuse the compilation. The server also exposes `POST /v1/chat/completions` (OpenAI-
 shaped, applies the chat template, stops on `<|im_end|>`) and `POST /v1/completions`.
 
+### Environment variables
+
+| Var | Default | Effect |
+|---|---|---|
+| `JAX_COMPILATION_CACHE_DIR` | unset | Persist the JIT compile across server restarts. Setting this drops warm-start first-request latency from ~50 s → ~5 s. Mount as a Docker volume to survive container rebuilds. |
+| `JLLM_ATTENTION_IMPL` | `einsum` | Attention backend: `einsum` / `sdpa` / `aiter`. A/B without a rebuild. |
+| `JLLM_MODEL_PATH` | unset | Default `--model-path` (useful in Docker). |
+| `XLA_PYTHON_CLIENT_PREALLOCATE` | `false` | Auto-set by jllm. Stops XLA from grabbing all GPU memory on startup. |
+| `XLA_PYTHON_CLIENT_MEM_FRACTION` | `0.90` | Auto-set by jllm. |
+
 ## Architecture
 
 One extend kernel and one decode kernel handle all work. Both JIT-compile exactly once

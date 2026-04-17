@@ -5,7 +5,7 @@ import pytest
 
 from jllm.engine import engine
 from jllm.engine.request import SamplingParams
-from jllm.model.weights import load_qwen2
+from jllm.model.weights import load_from_path
 
 MODEL_PATH = os.environ.get("PARITY_MODEL", "weights/Qwen2.5-0.5B-Instruct")
 
@@ -32,7 +32,7 @@ def _run_engine_fp32(model, prompts, max_num_seqs, max_model_len, max_new):
 
 @pytest.fixture(scope="module")
 def model_fp32():
-    return load_qwen2(MODEL_PATH, dtype=jnp.float32)
+    return load_from_path(MODEL_PATH, dtype=jnp.float32)
 
 
 def test_engine_is_deterministic(model_fp32):

@@ -19,19 +19,27 @@ import equinox as eqx
 from jax import Array
 from jax import numpy as jnp
 
-from ..model.qwen2 import (
+from typing import Union
+
+from ..model.common import (
     Attention,
     DecoderLayer,
-    Qwen2Model,
     apply_rope,
     attention_kernel,
-    dense,
     embed,
     linear,
+    maybe_qk_norm,
     rms_norm,
     rope_cos_sin,
+    swiglu,
 )
+from ..model.qwen2 import Qwen2Model
+from ..model.qwen3 import Qwen3Model
 from .paged import PagedCache, PagedLayerCache, gather_kv, scatter_kv_decode, scatter_kv_prefill
+
+# The engine is arch-agnostic: it takes any model that exposes
+# `embed_tokens`, `layers: list[DecoderLayer]`, `norm`, `rotary_emb`, `lm_head`.
+Model = Union[Qwen2Model, Qwen3Model]
 
 
 # ---------- chunked prefill (one slot, one chunk) ----------
@@ -51,6 +59,7 @@ def attention_extend(
     q = linear(a.q_proj, hidden).reshape(1, C, a.num_heads, a.head_dim).transpose(0, 2, 1, 3)
     k_new = linear(a.k_proj, hidden).reshape(1, C, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
     v_new = linear(a.v_proj, hidden).reshape(1, C, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
+    q, k_new = maybe_qk_norm(a, q, k_new)  # no-op on Qwen2 (q_norm is None)
     q, k_new = apply_rope(q, k_new, cos, sin)
 
     # Scatter this chunk's C tokens into phys_block[0..C-1]. scatter_kv_prefill
@@ -77,18 +86,20 @@ def attention_extend(
     return linear(a.o_proj, out), new_layer
 
 
-def decoder_layer_extend(d: DecoderLayer, hidden, cos, sin, layer, q_pos, block_table_row, phys_block):
+def decoder_layer_extend(
+    d: DecoderLayer, hidden, cos, sin, layer, q_pos, block_table_row, phys_block,
+):
     h, new_layer = attention_extend(
         d.self_attn, rms_norm(d.input_layernorm, hidden), cos, sin, layer,
         q_pos, block_table_row, phys_block,
     )
     hidden = hidden + h
-    hidden = hidden + dense(d.mlp, rms_norm(d.post_attention_layernorm, hidden))
+    hidden = hidden + swiglu(d.mlp, rms_norm(d.post_attention_layernorm, hidden))
     return hidden, new_layer
 
 
 def extend_step(
-    m: Qwen2Model,
+    m: Model,
     chunk_ids: Array,         # [1, C] int32
     cache: PagedCache,
     block_table_row: Array,   # [NB_MAX] int32
@@ -128,6 +139,7 @@ def attention_decode_cb(
     q = linear(a.q_proj, hidden).reshape(B, 1, a.num_heads, a.head_dim).transpose(0, 2, 1, 3)
     k_new = linear(a.k_proj, hidden).reshape(B, 1, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
     v_new = linear(a.v_proj, hidden).reshape(B, 1, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
+    q, k_new = maybe_qk_norm(a, q, k_new)  # no-op on Qwen2
     q, k_new = apply_rope(q, k_new, cos, sin)
 
     # scatter_kv_decode expects [B, 1, H_kv, D] (heads-third).
@@ -155,12 +167,12 @@ def decoder_layer_decode_cb(d: DecoderLayer, hidden, cos, sin, layer, positions,
         positions, block_tables, phys_block, slot_in_block,
     )
     hidden = hidden + h
-    hidden = hidden + dense(d.mlp, rms_norm(d.post_attention_layernorm, hidden))
+    hidden = hidden + swiglu(d.mlp, rms_norm(d.post_attention_layernorm, hidden))
     return hidden, new_layer
 
 
 def decode_step_cb(
-    m: Qwen2Model,
+    m: Model,
     last_tokens: Array,
     cache: PagedCache,
     positions: Array,

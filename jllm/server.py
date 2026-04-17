@@ -1,8 +1,7 @@
 """FastAPI server exposing the jllm engine over HTTP.
 
-Run on the GPU host; port-forward to local machine with:
-
-    ssh -L 8080:localhost:8080 gpu-droplet
+Run locally, or on a remote GPU host with a port-forwarded tunnel
+(e.g. `ssh -L 8080:localhost:8080 <host>`).
 
 Endpoints:
 - POST /generate            raw-prompt completion (streams SSE)
@@ -10,6 +9,12 @@ Endpoints:
 - POST /v1/chat/completions OpenAI-compatible chat (applies tokenizer chat template)
 - GET  /health
 """
+# Apply JAX env vars (JAX_COMPILATION_CACHE_DIR, XLA_PYTHON_CLIENT_*) before
+# any jax import anywhere in the process. See jllm.config for the knob list.
+from jllm.config import JllmConfig, apply_jax_env
+_INITIAL_CFG = JllmConfig.from_env()
+apply_jax_env(_INITIAL_CFG)
+
 import argparse
 import json
 import time
@@ -24,7 +29,7 @@ from transformers import AutoTokenizer
 
 from jllm.engine import engine
 from jllm.engine.request import SamplingParams
-from jllm.model.weights import load_qwen2
+from jllm.model.weights import load_from_path
 
 app = FastAPI(title="jllm", version="0.0.1")
 STATE: dict = {}
@@ -223,7 +228,8 @@ def v1_chat_completions(req: ChatRequest):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--model-path", default="weights/Qwen2.5-32B-Instruct")
+    p.add_argument("--model-path", default=_INITIAL_CFG.model_path or "weights/Qwen2.5-32B-Instruct",
+                   help="Path to HF model directory. Env: JLLM_MODEL_PATH.")
     p.add_argument("--model-name", default=None,
                    help="Name exposed on /v1 endpoints (default: last path component)")
     p.add_argument("--host", default="0.0.0.0")
@@ -234,10 +240,12 @@ def main():
     p.add_argument("--dtype", choices=["bf16", "fp32"], default="bf16")
     args = p.parse_args()
 
+    print(f"config: attention_impl={_INITIAL_CFG.attention_impl} "
+          f"jit_cache={_INITIAL_CFG.compilation_cache_dir or '<disabled>'}", flush=True)
     dtype = jnp.bfloat16 if args.dtype == "bf16" else jnp.float32
     print(f"loading {args.model_path} ({args.dtype})...", flush=True)
     tok = AutoTokenizer.from_pretrained(args.model_path)
-    model = load_qwen2(args.model_path, dtype=dtype)
+    model = load_from_path(args.model_path, dtype=dtype)
     driver = engine.make_driver(
         model,
         max_num_seqs=args.max_num_seqs,

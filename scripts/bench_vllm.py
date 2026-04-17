@@ -159,7 +159,7 @@ class InProcJllm:
         from transformers import AutoTokenizer
         from jllm.engine import engine as eng
         from jllm.engine.request import SamplingParams
-        from jllm.model.weights import load_qwen2
+        from jllm.model.weights import load_from_path
 
         self.eng = eng
         self.SamplingParams = SamplingParams
@@ -170,7 +170,7 @@ class InProcJllm:
         self.eos_id = self.tok.convert_tokens_to_ids("<|im_end|>")
         if not isinstance(self.eos_id, int) or self.eos_id < 0:
             self.eos_id = self.tok.eos_token_id
-        model = load_qwen2(args.model_path, dtype=dtype)
+        model = load_from_path(args.model_path, dtype=dtype)
         self.driver = eng.make_driver(
             model,
             max_num_seqs=args.max_num_seqs,
