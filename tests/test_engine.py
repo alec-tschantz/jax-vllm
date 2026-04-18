@@ -6,6 +6,7 @@ import pytest
 from jllm.engine import engine
 from jllm.engine.request import SamplingParams
 from jllm.model.weights import load_from_path
+from ._weights import require_model_path
 
 MODEL_PATH = os.environ.get("PARITY_MODEL", "weights/Qwen2.5-0.5B-Instruct")
 
@@ -32,7 +33,7 @@ def _run_engine_fp32(model, prompts, max_num_seqs, max_model_len, max_new):
 
 @pytest.fixture(scope="module")
 def model_fp32():
-    return load_from_path(MODEL_PATH, dtype=jnp.float32)
+    return load_from_path(require_model_path(MODEL_PATH), dtype=jnp.float32)
 
 
 def test_engine_is_deterministic(model_fp32):
@@ -88,24 +89,24 @@ def test_prefix_caching_skips_extend_on_second_request(model_fp32):
     )
 
     # First request: cold cache.
-    driver.n_extend_calls = 0
+    driver.stats.extend_calls = 0
     rid1 = engine.add_request(driver, prompt_32, SamplingParams(max_new_tokens=MAX_NEW))
     out1: list[int] = []
     while engine.has_work(driver):
         for ev in engine.step(driver):
             if ev.request_id == rid1:
                 out1.append(ev.token)
-    cold_extend_calls = driver.n_extend_calls
+    cold_extend_calls = driver.stats.extend_calls
 
     # Second request: same prompt; prefix should be fully cached.
-    driver.n_extend_calls = 0
+    driver.stats.extend_calls = 0
     rid2 = engine.add_request(driver, prompt_32, SamplingParams(max_new_tokens=MAX_NEW))
     out2: list[int] = []
     while engine.has_work(driver):
         for ev in engine.step(driver):
             if ev.request_id == rid2:
                 out2.append(ev.token)
-    warm_extend_calls = driver.n_extend_calls
+    warm_extend_calls = driver.stats.extend_calls
 
     assert out1 == out2, f"outputs diverge: cold={out1} warm={out2}"
     assert cold_extend_calls >= 2, f"cold path should have run >=2 extend_step calls, got {cold_extend_calls}"
@@ -129,14 +130,14 @@ def test_chunked_prefill_runs_one_chunk_per_block(model_fp32):
         model_fp32, max_num_seqs=1, max_model_len=32, max_prefill_len=16,
         block_size=block_size, dtype=jnp.float32,
     )
-    driver.n_extend_calls = 0
+    driver.stats.extend_calls = 0
     rid = engine.add_request(driver, prompt, SamplingParams(max_new_tokens=2))
     while engine.has_work(driver):
         for _ in engine.step(driver):
             pass
-    assert driver.n_extend_calls == expected_chunks, (
+    assert driver.stats.extend_calls == expected_chunks, (
         f"expected {expected_chunks} extend_step calls for a {len(prompt)}-token prompt "
-        f"with block_size={block_size}; got {driver.n_extend_calls}"
+        f"with block_size={block_size}; got {driver.stats.extend_calls}"
     )
 
     # Now a longer prompt that needs multiple chunks.
@@ -145,14 +146,14 @@ def test_chunked_prefill_runs_one_chunk_per_block(model_fp32):
         model_fp32, max_num_seqs=1, max_model_len=48, max_prefill_len=32,
         block_size=block_size, dtype=jnp.float32,
     )
-    driver2.n_extend_calls = 0
+    driver2.stats.extend_calls = 0
     rid2 = engine.add_request(driver2, prompt_long, SamplingParams(max_new_tokens=2))
     while engine.has_work(driver2):
         for _ in engine.step(driver2):
             pass
-    assert driver2.n_extend_calls == 2, (
+    assert driver2.stats.extend_calls == 2, (
         f"expected 2 extend_step calls for a 32-token prompt with block_size=16; "
-        f"got {driver2.n_extend_calls}"
+        f"got {driver2.stats.extend_calls}"
     )
 
 
@@ -175,21 +176,21 @@ def test_partial_prefix_cache_hit_skips_only_cached_blocks(model_fp32):
     )
 
     # Admit A first; this populates block 0 (first 16 tokens of A) into the cache.
-    driver.n_extend_calls = 0
+    driver.stats.extend_calls = 0
     rid_a = engine.add_request(driver, prompt_a, SamplingParams(max_new_tokens=MAX_NEW))
     while engine.has_work(driver):
         for _ in engine.step(driver):
             pass
-    a_extend = driver.n_extend_calls
+    a_extend = driver.stats.extend_calls
     assert a_extend == 2, f"cold A should run 2 extend calls, got {a_extend}"
 
     # Now B: first block matches A's first block → cached; second block is new.
-    driver.n_extend_calls = 0
+    driver.stats.extend_calls = 0
     rid_b = engine.add_request(driver, prompt_b, SamplingParams(max_new_tokens=MAX_NEW))
     while engine.has_work(driver):
         for _ in engine.step(driver):
             pass
-    b_extend = driver.n_extend_calls
+    b_extend = driver.stats.extend_calls
     assert b_extend == 1, (
         f"B shares 1 cached block with A and has 1 new block; expected 1 extend call, "
         f"got {b_extend}"

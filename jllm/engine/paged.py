@@ -33,7 +33,7 @@ import equinox as eqx
 from jax import Array
 from jax import numpy as jnp
 
-from ..model.qwen2 import Qwen2Config
+from ..model.common import KVCacheConfig
 
 BlockHash = bytes
 SENTINEL_REF = 1 << 30  # "infinite" ref count for the sentinel block
@@ -53,7 +53,7 @@ class PagedCache(eqx.Module):
 
 
 def init_paged_cache(
-    cfg: Qwen2Config, num_blocks: int, block_size: int, dtype
+    cfg: KVCacheConfig, num_blocks: int, block_size: int, dtype
 ) -> PagedCache:
     shape = (num_blocks, block_size, cfg.num_kv_heads, cfg.head_dim)
     return PagedCache(
@@ -228,6 +228,20 @@ def scatter_kv_prefill(
     v_blocked = v_new[0].reshape(nb, block_size, *v_new.shape[2:])
     new_k = layer.k.at[block_indices].set(k_blocked)
     new_v = layer.v.at[block_indices].set(v_blocked)
+    return PagedLayerCache(k=new_k, v=new_v)
+
+
+def scatter_kv_prefill_batch(
+    layer: PagedLayerCache,
+    k_new: Array,           # [B, block_size, H_kv, D]
+    v_new: Array,
+    block_indices: Array,   # [B] int32
+) -> PagedLayerCache:
+    """Write one fixed-size prefill chunk per batch element."""
+    if k_new.shape[1] != layer.k.shape[1]:
+        raise ValueError("scatter_kv_prefill_batch expects exactly one block per row")
+    new_k = layer.k.at[block_indices].set(k_new)
+    new_v = layer.v.at[block_indices].set(v_new)
     return PagedLayerCache(k=new_k, v=new_v)
 
 

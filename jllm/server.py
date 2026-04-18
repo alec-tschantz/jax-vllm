@@ -19,6 +19,7 @@ import argparse
 import json
 import time
 import uuid
+from dataclasses import asdict
 
 import jax.numpy as jnp
 import uvicorn
@@ -68,11 +69,13 @@ def health():
     return {
         "status": "ok",
         "model": STATE["model_path"],
+        "attention_impl": _INITIAL_CFG.attention_impl,
         "active_slots": len(d.running),
         "waiting": d.waiting.qsize(),
         "max_num_seqs": d.max_num_seqs,
         "max_model_len": d.max_model_len,
         "max_prefill_len": d.max_prefill_len,
+        "stats": asdict(d.stats),
     }
 
 

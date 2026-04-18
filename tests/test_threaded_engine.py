@@ -7,6 +7,7 @@ import pytest
 from jllm.engine import engine
 from jllm.engine.request import SamplingParams
 from jllm.model.weights import load_from_path
+from ._weights import require_model_path
 
 MODEL_PATH = os.environ.get("PARITY_MODEL", "weights/Qwen2.5-0.5B-Instruct")
 
@@ -21,7 +22,7 @@ MAX_NEW = 6
 
 @pytest.fixture(scope="module")
 def model():
-    return load_from_path(MODEL_PATH, dtype=jnp.float32)
+    return load_from_path(require_model_path(MODEL_PATH), dtype=jnp.float32)
 
 
 def test_threaded_requests_produce_correct_outputs(model):

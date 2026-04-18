@@ -3,11 +3,12 @@ import os
 import jax.numpy as jnp
 import numpy as np
 import pytest
-import torch
+torch = pytest.importorskip("torch")
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from jllm.model.qwen2 import forward
 from jllm.model.weights import load_from_path
+from ._weights import require_model_path
 
 MODEL_PATH = os.environ.get("PARITY_MODEL", "weights/Qwen2.5-0.5B-Instruct")
 PROMPTS = [
@@ -19,17 +20,17 @@ PROMPTS = [
 
 @pytest.fixture(scope="module")
 def hf_model():
-    return AutoModelForCausalLM.from_pretrained(MODEL_PATH, dtype=torch.bfloat16).eval()
+    return AutoModelForCausalLM.from_pretrained(require_model_path(MODEL_PATH), dtype=torch.bfloat16).eval()
 
 
 @pytest.fixture(scope="module")
 def jx_model():
-    return load_from_path(MODEL_PATH, dtype=jnp.bfloat16)
+    return load_from_path(require_model_path(MODEL_PATH), dtype=jnp.bfloat16)
 
 
 @pytest.fixture(scope="module")
 def tokenizer():
-    return AutoTokenizer.from_pretrained(MODEL_PATH)
+    return AutoTokenizer.from_pretrained(require_model_path(MODEL_PATH))
 
 
 @pytest.mark.parametrize("prompt", PROMPTS)
