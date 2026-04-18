@@ -1,5 +1,6 @@
 """Unified jllm-vs-vLLM harness with optional JSON output."""
 import argparse
+from dataclasses import asdict
 import json
 import os
 import statistics
@@ -11,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
-DEFAULT_PROMPTS = [
+BALANCED_PROMPTS = [
     "The capital of France is",
     "def fibonacci(n):",
     "Once upon a time",
@@ -19,6 +20,38 @@ DEFAULT_PROMPTS = [
     "Write a haiku about the ocean:",
     "In a galaxy far, far away,",
 ]
+
+SHORT_PROMPTS = [
+    "2 + 2 =",
+    "Name one color.",
+    "CPU stands for",
+    "Finish: hello",
+]
+
+LONG_PROMPTS = [
+    (
+        "Summarize the following engineering note in two bullets:\n"
+        + "We want stable throughput under mixed prompt lengths, predictable memory use, and repeatable benchmark output across runs. " * 12
+        + "\nSummary:"
+    ),
+    (
+        "Continue this field report in the same style:\n"
+        + "At dusk the observatory logged increased thermal drift, a brief packet-loss burst on the telemetry link, and a slow recovery once the cooling loop stabilized. " * 10
+        + "\nContinuation:"
+    ),
+    (
+        "Read this memo and answer with the most important tradeoff:\n"
+        + "The system should remain small and legible, but it also needs enough instrumentation to explain scheduler behavior, padding overhead, and compilation sensitivity under real traffic. " * 10
+        + "\nTradeoff:"
+    ),
+]
+
+WORKLOAD_PROMPTS = {
+    "balanced": BALANCED_PROMPTS,
+    "short": SHORT_PROMPTS,
+    "long": LONG_PROMPTS,
+    "mixed": SHORT_PROMPTS + BALANCED_PROMPTS + LONG_PROMPTS,
+}
 
 CHAT_CONVO = [
     "Hi! In one short sentence, what is the capital of France?",
@@ -58,6 +91,28 @@ def _git_sha() -> str:
 
 def _tok_s(total_s: float, n_tokens: int) -> float:
     return n_tokens / total_s if total_s > 0 else 0.0
+
+
+def _prompt_pool(workload: str) -> list[str]:
+    return list(WORKLOAD_PROMPTS[workload])
+
+
+def _request_prompts(workload: str, num_requests: int) -> list[str]:
+    pool = _prompt_pool(workload)
+    return (pool * ((num_requests // len(pool)) + 1))[:num_requests]
+
+
+def _prompt_summary(prompts: list[str]) -> dict:
+    if not prompts:
+        return {"count": 0, "min_chars": 0, "median_chars": 0, "max_chars": 0, "unique_lengths": 0}
+    lengths = sorted(len(prompt) for prompt in prompts)
+    return {
+        "count": len(prompts),
+        "min_chars": lengths[0],
+        "median_chars": statistics.median(lengths),
+        "max_chars": lengths[-1],
+        "unique_lengths": len(set(lengths)),
+    }
 
 
 def _write_json(path: str, payload: dict) -> None:
@@ -112,6 +167,24 @@ def _vllm_chat(url: str, model: str, messages: list, max_tokens: int) -> dict:
     }
 
 
+def _stats_delta(before: dict, after: dict) -> dict:
+    delta: dict[str, int] = {}
+    for key in sorted(set(before) | set(after)):
+        delta[key] = int(after.get(key, 0)) - int(before.get(key, 0))
+    return delta
+
+
+def _safe_stats(jllm) -> dict:
+    stats_fn = getattr(jllm, "stats", None)
+    if stats_fn is None:
+        return {}
+    try:
+        stats = stats_fn()
+    except Exception:
+        return {}
+    return stats if isinstance(stats, dict) else {}
+
+
 class HTTPJllm:
     def __init__(self, url: str, model_name: str):
         self.url = url
@@ -126,6 +199,9 @@ class HTTPJllm:
             "attention_impl": self.health.get("attention_impl", os.environ.get("JLLM_ATTENTION_IMPL", "einsum")),
             "server_health": self.health,
         }
+
+    def stats(self) -> dict:
+        return _safe_health(self.url).get("stats", {})
 
     def completion(self, prompt: str, max_tokens: int, state: str = "warm") -> dict:
         t0 = time.perf_counter()
@@ -244,6 +320,9 @@ class InProcJllm:
             "max_prefill_len": self.args.max_prefill_len,
         }
 
+    def stats(self) -> dict:
+        return asdict(self.driver.stats)
+
     def stop(self):
         self.eng.stop(self.driver)
 
@@ -287,13 +366,42 @@ def _warmup(args, jllm, vllm_url: str, vllm_model: str) -> None:
         _vllm_completion(vllm_url, vllm_model, "hello", 4)
 
 
+def _warmup_concurrency_levels(args, jllm, vllm_url: str, vllm_model: str) -> list[int]:
+    warmed: list[int] = []
+    for concurrency in sorted(set(args.concurrency)):
+        if concurrency <= 1:
+            continue
+        prompts = ["hello"] * concurrency
+
+        def vllm_fn(prompt: str):
+            return _vllm_completion(vllm_url, vllm_model, prompt, 4)
+
+        def jllm_fn(prompt: str):
+            return jllm.completion(prompt, 4, state=f"warmup-c{concurrency}")
+
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            list(pool.map(vllm_fn, prompts))
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            list(pool.map(jllm_fn, prompts))
+        warmed.append(concurrency)
+    return warmed
+
+
+def _warmup_unique_prompts(jllm, vllm_url: str, vllm_model: str, prompts: list[str], max_tokens: int = 4) -> int:
+    unique_prompts = list(dict.fromkeys(prompts))
+    for prompt in unique_prompts:
+        jllm.completion(prompt, max_tokens, state="warmup-prompts")
+        _vllm_completion(vllm_url, vllm_model, prompt, max_tokens)
+    return len(unique_prompts)
+
+
 def run_sequential(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dict]:
     print("warming up...", flush=True)
     _warmup(args, jllm, vllm_url, vllm_model)
     print("  warmed", flush=True)
 
     prompts: list[dict] = []
-    for prompt in DEFAULT_PROMPTS:
+    for prompt in _prompt_pool(args.workload):
         v_result = _vllm_completion(vllm_url, vllm_model, prompt, args.max_new_tokens)
         j_result = jllm.completion(prompt, args.max_new_tokens)
         match_chars = 0
@@ -331,7 +439,9 @@ def run_sequential(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dic
 
     result = {
         "mode": "sequential",
+        "workload": args.workload,
         "warmups": args.warmups,
+        "prompt_summary": _prompt_summary([row["prompt"] for row in prompts]),
         "prompts": prompts,
         "summary": {
             "vllm_total_s": total_vllm_s,
@@ -347,10 +457,16 @@ def run_sequential(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dic
 
 
 def run_concurrent(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dict]:
-    prompts = (DEFAULT_PROMPTS * ((args.num_requests // len(DEFAULT_PROMPTS)) + 1))[: args.num_requests]
+    prompts = _request_prompts(args.workload, args.num_requests)
     print("warming up...", flush=True)
     _warmup(args, jllm, vllm_url, vllm_model)
+    warmed_concurrency = _warmup_concurrency_levels(args, jllm, vllm_url, vllm_model)
+    warmed_prompts = _warmup_unique_prompts(jllm, vllm_url, vllm_model, prompts)
     print("  warmed", flush=True)
+    if warmed_concurrency:
+        print(f"  concurrency buckets warmed: {warmed_concurrency}", flush=True)
+    print(f"  unique prompts warmed: {warmed_prompts}", flush=True)
+    print(f"  workload={args.workload} prompt_chars={_prompt_summary(prompts)}", flush=True)
 
     print(f"{'system':<6} {'C':>4} {'N':>4} {'wall_s':>8} {'tokens':>8} {'tok/s':>9} {'p50_lat':>8} {'p95_lat':>8}")
     rows: list[dict] = []
@@ -389,7 +505,15 @@ def run_concurrent(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dic
                 f"{row['tok_per_s']:>9.1f} {p50:>8.2f} {p95:>8.2f}",
                 flush=True,
             )
-    return 0, {"mode": "concurrent", "warmups": args.warmups, "rows": rows}
+    return 0, {
+        "mode": "concurrent",
+        "workload": args.workload,
+        "warmups": args.warmups,
+        "concurrency_warmups": warmed_concurrency,
+        "prompt_warmups": warmed_prompts,
+        "prompt_summary": _prompt_summary(prompts),
+        "rows": rows,
+    }
 
 
 def run_chat(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dict]:
@@ -480,6 +604,8 @@ def run_prefix_cache(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, d
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["sequential", "concurrent", "chat", "prefix_cache"], default="sequential")
+    parser.add_argument("--workload", choices=sorted(WORKLOAD_PROMPTS), default="balanced",
+                        help="Prompt workload profile used by sequential/concurrent modes.")
     parser.add_argument("--jllm-url", default=None,
                         help="Hit a running jllm server at this URL. If omitted, spin up in-process.")
     parser.add_argument("--jllm-model-name", default="qwen32b",
@@ -509,6 +635,7 @@ def main() -> int:
         jllm = InProcJllm(args)
         stop_fn = jllm.stop
 
+    stats_before = _safe_stats(jllm)
     try:
         if args.mode == "sequential":
             rc, result = run_sequential(args, jllm, args.vllm_url, args.vllm_model_name)
@@ -520,6 +647,7 @@ def main() -> int:
             rc, result = run_prefix_cache(args, jllm, args.vllm_url, args.vllm_model_name)
         else:
             raise AssertionError(f"unknown mode {args.mode}")
+        stats_after = _safe_stats(jllm)
     finally:
         stop_fn()
 
@@ -528,9 +656,13 @@ def main() -> int:
             "label": args.label,
             "git_sha": _git_sha(),
             "mode": args.mode,
+            "workload": args.workload,
             "warmups": args.warmups,
             "started_at_unix_s": time.time(),
             "jllm": jllm.info(),
+            "jllm_stats_before": stats_before,
+            "jllm_stats_after": stats_after,
+            "jllm_stats_delta": _stats_delta(stats_before, stats_after),
             "vllm": {
                 "url": args.vllm_url,
                 "model": args.vllm_model_name,

@@ -1,3 +1,4 @@
+import pytest
 import jax.numpy as jnp
 
 from jllm.engine import engine as eng
@@ -35,6 +36,32 @@ def test_prefill_uses_active_batch(monkeypatch):
     assert driver.stats.extend_calls == 2
 
 
+@pytest.mark.parametrize(
+    ("active_size", "expected_padding"),
+    [(1, 0), (2, 0), (3, 1), (4, 0)],
+)
+def test_prefill_stats_track_active_slots_and_padding(active_size, expected_padding):
+    model = make_tiny_model()
+    driver = eng.make_driver(
+        model,
+        max_num_seqs=4,
+        max_model_len=16,
+        max_prefill_len=8,
+        block_size=4,
+        dtype=jnp.float32,
+    )
+
+    for offset in range(active_size):
+        base = 1 + 4 * offset
+        eng.add_request(driver, [base, base + 1, base + 2, base + 3], SamplingParams(max_new_tokens=2))
+
+    eng.step(driver)
+
+    assert driver.stats.prefill_batches == 1
+    assert driver.stats.prefill_slots_total == active_size
+    assert driver.stats.prefill_padding_slots_total == expected_padding
+
+
 def test_decode_uses_active_batch(monkeypatch):
     model = make_tiny_model()
     driver = eng.make_driver(
@@ -63,6 +90,33 @@ def test_decode_uses_active_batch(monkeypatch):
     assert seen == [2]
     assert driver.stats.decode_batches == 1
     assert driver.stats.decode_calls == 2
+
+
+@pytest.mark.parametrize(
+    ("active_size", "expected_padding"),
+    [(1, 0), (2, 0), (3, 1), (4, 0)],
+)
+def test_decode_stats_track_active_slots_and_padding(active_size, expected_padding):
+    model = make_tiny_model()
+    driver = eng.make_driver(
+        model,
+        max_num_seqs=4,
+        max_model_len=16,
+        max_prefill_len=8,
+        block_size=4,
+        dtype=jnp.float32,
+    )
+
+    for offset in range(active_size):
+        base = 1 + 4 * offset
+        eng.add_request(driver, [base, base + 1, base + 2, base + 3], SamplingParams(max_new_tokens=2))
+
+    eng.step(driver)
+    eng.step(driver)
+
+    assert driver.stats.decode_batches == 1
+    assert driver.stats.decode_slots_total == active_size
+    assert driver.stats.decode_padding_slots_total == expected_padding
 
 
 def test_scheduler_prefills_before_decode_when_both_are_ready(monkeypatch):

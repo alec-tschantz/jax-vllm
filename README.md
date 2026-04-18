@@ -84,6 +84,8 @@ which is useful when comparing runs.
 | `JLLM_ATTENTION_IMPL` | `einsum` | Attention backend: `einsum` or `sdpa`. |
 | `JLLM_MODEL_PATH` | unset | Default model path for `jllm-serve`. |
 | `JAX_COMPILATION_CACHE_DIR` | unset | Persist XLA compilations across restarts. |
+| `JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS` | `0` | Cache even short compiles so repeated experiment lanes warm quickly. |
+| `JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES` | `0` | Persist small compiled artifacts instead of only larger entries. |
 | `XLA_PYTHON_CLIENT_PREALLOCATE` | `false` | Prevent eager full-device reservation. |
 | `XLA_PYTHON_CLIENT_MEM_FRACTION` | `0.90` | Default memory ceiling for XLA allocation. |
 
@@ -95,6 +97,7 @@ It supports both a running HTTP server and an in-process `jllm` engine.
 ```sh
 uv run python scripts/bench_vllm.py --mode sequential
 uv run python scripts/bench_vllm.py --mode concurrent --concurrency 1 4 16
+uv run python scripts/bench_vllm.py --mode concurrent --workload mixed --concurrency 1 2 4
 uv run python scripts/bench_vllm.py --mode chat
 uv run python scripts/bench_vllm.py --mode prefix_cache --prefix-len 256
 ```
@@ -104,6 +107,7 @@ Structured output can be written with:
 ```sh
 uv run python scripts/bench_vllm.py \
   --mode concurrent \
+  --workload mixed \
   --concurrency 1 4 16 \
   --json-out results/concurrent.json \
   --label mi300x-nightly
@@ -113,8 +117,10 @@ The JSON payload includes:
 
 - git SHA
 - benchmark label
+- workload profile and prompt-length summary
 - attention backend
 - server metadata when available
+- engine stats deltas for the timed run
 - throughput / latency summaries
 - cold vs warm prefix-cache measurements where relevant
 
@@ -124,7 +130,8 @@ The intended remote workflow is deliberately simple:
 
 1. Sync the repo to the GPU host.
 2. SSH into the host.
-3. Run `jllm`, vLLM, or benchmark commands directly on the remote machine.
+3. Launch one or more isolated GPU lanes for `jllm` and vLLM.
+4. Run benchmark commands against the lane ports you care about.
 
 The sync step is parameterized through environment variables rather than
 hard-coded paths.
@@ -143,12 +150,19 @@ export JLLM_REMOTE_DIR=/root/jax-vllm
 bash scripts/sync.sh
 ssh gpu-droplet
 cd /root/jax-vllm
-HIP_VISIBLE_DEVICES=0 UV_CACHE_DIR=.uv-cache uv run jllm-serve \
-  --port 8080 \
-  --model-path weights/Qwen2.5-32B-Instruct
+JLLM_GPU=0 JLLM_PORT=8080 bash scripts/run_jllm_lane.sh
+VLLM_GPU=1 VLLM_PORT=8020 bash scripts/run_vllm_lane.sh
 ```
 
-From another shell on the remote host, or after starting vLLM separately:
+Each lane chooses its own persistent JAX cache directory and log file, so warm
+restarts and parallel experiments do not trample one another. The lane helpers
+default to:
+
+- `JAX_COMPILATION_CACHE_DIR=/tmp/jllm-jax-cache/gpu<gpu>-port<port>`
+- `JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0`
+- `JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES=0`
+
+From another shell on the remote host:
 
 ```sh
 cd /root/jax-vllm
@@ -156,14 +170,25 @@ UV_CACHE_DIR=.uv-cache uv run python scripts/bench_vllm.py \
   --jllm-url http://127.0.0.1:8080 \
   --vllm-url http://127.0.0.1:8020 \
   --mode concurrent \
-  --concurrency 1 4 16 \
+  --workload mixed \
+  --concurrency 1 2 4 \
   --json-out results/concurrent.json
+```
+
+To add a second lane in parallel:
+
+```sh
+cd /root/jax-vllm
+JLLM_GPU=2 JLLM_PORT=8182 bash scripts/run_jllm_lane.sh
+VLLM_GPU=3 VLLM_PORT=9020 VLLM_MODEL_NAME=qwen32b-lane2 bash scripts/run_vllm_lane.sh
 ```
 
 For inspection without side effects:
 
 ```sh
 JLLM_DRY_RUN=1 bash scripts/sync.sh
+JLLM_DRY_RUN=1 JLLM_GPU=2 JLLM_PORT=8182 bash scripts/run_jllm_lane.sh
+VLLM_DRY_RUN=1 VLLM_GPU=3 VLLM_PORT=9020 bash scripts/run_vllm_lane.sh
 ```
 
 The local machine in this development environment resolves `gpu-droplet` via
@@ -192,10 +217,10 @@ The test suite currently covers:
 
 - paged cache primitives and LRU behavior
 - packed prefill/decode scheduling
-- decode-first scheduling with mixed cached and uncached requests
+- prefill-before-decode scheduling with mixed cached and uncached requests
 - threaded request handling
 - Hugging Face parity when model weights are available
-- benchmark JSON and remote helper script smoke tests
+- benchmark JSON, workload selection, and remote helper script smoke tests
 
 ## Repository Layout
 

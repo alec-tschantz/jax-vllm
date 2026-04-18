@@ -291,6 +291,8 @@ def _prefill_batch(driver: Driver) -> list[StepEvent]:
         jnp.asarray(phys_blocks),
     )
     driver.stats.prefill_batches += 1
+    driver.stats.prefill_slots_total += len(active_slots)
+    driver.stats.prefill_padding_slots_total += bucket - len(active_slots)
     driver.stats.extend_calls += len(active_slots)
 
     logits_np = np.asarray(logits)
@@ -363,6 +365,8 @@ def _decode(driver: Driver) -> list[StepEvent]:
         jnp.asarray(slot_in_block),
     )
     driver.stats.decode_batches += 1
+    driver.stats.decode_slots_total += len(active_slots)
+    driver.stats.decode_padding_slots_total += bucket - len(active_slots)
     driver.stats.decode_calls += len(active_slots)
 
     new_toks_np = np.asarray(new_toks)

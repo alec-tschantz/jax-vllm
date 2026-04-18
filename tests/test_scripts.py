@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
@@ -33,8 +34,15 @@ def test_bench_json_output(tmp_path, monkeypatch):
     bench = _load_module(SCRIPTS_DIR / "bench_vllm.py", "bench_vllm_test")
 
     class DummyJllm:
+        def __init__(self):
+            self.stats_calls = 0
+
         def info(self):
             return {"backend": "http", "attention_impl": "einsum"}
+
+        def stats(self):
+            self.stats_calls += 1
+            return {"decode_batches": self.stats_calls}
 
     monkeypatch.setattr(bench, "HTTPJllm", lambda url, model_name: DummyJllm())
     monkeypatch.setattr(bench, "_safe_health", lambda url: {"status": "ok"})
@@ -65,7 +73,102 @@ def test_bench_json_output(tmp_path, monkeypatch):
     assert rc == 0
     assert payload["metadata"]["label"] == "smoke"
     assert payload["metadata"]["git_sha"] == "deadbeef"
+    assert payload["metadata"]["workload"] == "balanced"
+    assert payload["metadata"]["jllm_stats_delta"]["decode_batches"] == 1
     assert payload["result"]["summary"]["jllm_tok_per_s"] == 1.0
+
+
+def test_mixed_workload_prompts_cover_multiple_lengths():
+    bench = _load_module(SCRIPTS_DIR / "bench_vllm.py", "bench_vllm_workload_test")
+
+    prompts = bench._request_prompts("mixed", 12)
+    lengths = [len(prompt) for prompt in prompts]
+    summary = bench._prompt_summary(prompts)
+
+    assert len(prompts) == 12
+    assert min(lengths) < 32
+    assert max(lengths) > 300
+    assert summary["min_chars"] == min(lengths)
+    assert summary["max_chars"] == max(lengths)
+    assert summary["unique_lengths"] >= 3
+
+
+def test_concurrency_warmup_skips_bucket_one(monkeypatch):
+    bench = _load_module(SCRIPTS_DIR / "bench_vllm.py", "bench_vllm_warmup_test")
+    calls: list[tuple[str, str]] = []
+
+    class DummyJllm:
+        def completion(self, prompt: str, max_tokens: int, state: str = "warm"):
+            calls.append(("jllm", state))
+            return {"text": "", "total_s": 0.01, "n_tokens": max_tokens, "tok_per_s": 100.0, "state": state}
+
+    args = SimpleNamespace(concurrency=[1, 4, 4], warmups=1)
+
+    monkeypatch.setattr(
+        bench,
+        "_vllm_completion",
+        lambda url, model, prompt, max_tokens: calls.append(("vllm", "warmup")) or {
+            "text": "",
+            "total_s": 0.01,
+            "n_tokens": max_tokens,
+            "tok_per_s": 100.0,
+            "state": "warm",
+        },
+    )
+
+    warmed = bench._warmup_concurrency_levels(args, DummyJllm(), "http://127.0.0.1:8020", "qwen32b")
+
+    assert warmed == [4]
+    assert calls.count(("vllm", "warmup")) == 4
+    assert calls.count(("jllm", "warmup-c4")) == 4
+
+
+def test_unique_prompt_warmup_deduplicates_prompts(monkeypatch):
+    bench = _load_module(SCRIPTS_DIR / "bench_vllm.py", "bench_vllm_prompt_warmup_test")
+    calls: list[tuple[str, str]] = []
+
+    class DummyJllm:
+        def completion(self, prompt: str, max_tokens: int, state: str = "warm"):
+            calls.append(("jllm", prompt))
+            return {"text": "", "total_s": 0.01, "n_tokens": max_tokens, "tok_per_s": 100.0, "state": state}
+
+    monkeypatch.setattr(
+        bench,
+        "_vllm_completion",
+        lambda url, model, prompt, max_tokens: calls.append(("vllm", prompt)) or {
+            "text": "",
+            "total_s": 0.01,
+            "n_tokens": max_tokens,
+            "tok_per_s": 100.0,
+            "state": "warm",
+        },
+    )
+
+    warmed = bench._warmup_unique_prompts(
+        DummyJllm(),
+        "http://127.0.0.1:8020",
+        "qwen32b",
+        ["alpha", "beta", "alpha", "gamma", "beta"],
+    )
+
+    assert warmed == 3
+    assert calls == [
+        ("jllm", "alpha"),
+        ("vllm", "alpha"),
+        ("jllm", "beta"),
+        ("vllm", "beta"),
+        ("jllm", "gamma"),
+        ("vllm", "gamma"),
+    ]
+
+
+def test_stats_delta_uses_zero_for_missing_keys():
+    bench = _load_module(SCRIPTS_DIR / "bench_vllm.py", "bench_vllm_stats_test")
+
+    assert bench._stats_delta({"prefill_batches": 2, "decode_batches": 1}, {"decode_batches": 4}) == {
+        "decode_batches": 3,
+        "prefill_batches": -2,
+    }
 
 
 def test_sync_script_dry_run():
@@ -83,11 +186,32 @@ def test_sync_script_dry_run():
 
 def test_remote_jllm_script_dry_run():
     out = _run_script(
-        "sync.sh",
+        "run_jllm_lane.sh",
         {
             "JLLM_DRY_RUN": "1",
-            "JLLM_REMOTE": "gpu-test",
-            "JLLM_REMOTE_DIR": "/srv/jax-vllm",
+            "JLLM_GPU": "2",
+            "JLLM_PORT": "8182",
+            "JLLM_JAX_CACHE_ROOT": "/tmp/jax-cache",
         },
     )
-    assert "gpu-test:/srv/jax-vllm/" in out
+    assert "HIP_VISIBLE_DEVICES=2" in out
+    assert "JAX_COMPILATION_CACHE_DIR=/tmp/jax-cache/gpu2-port8182" in out
+    assert "--port 8182" in out
+    assert "/tmp/jllm-8182.log" in out
+
+
+def test_remote_vllm_script_dry_run():
+    out = _run_script(
+        "run_vllm_lane.sh",
+        {
+            "VLLM_DRY_RUN": "1",
+            "VLLM_GPU": "3",
+            "VLLM_PORT": "9020",
+            "VLLM_MODEL_NAME": "qwen32b-lane",
+        },
+    )
+    assert "HIP_VISIBLE_DEVICES=3" in out
+    assert "/usr/local/bin/vllm serve /weights/Qwen2.5-32B-Instruct" in out or "vllm serve /weights/Qwen2.5-32B-Instruct" in out
+    assert "--port 9020" in out
+    assert "--served-model-name qwen32b-lane" in out
+    assert "/tmp/vllm-9020.log" in out
