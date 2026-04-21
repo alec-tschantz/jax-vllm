@@ -62,6 +62,13 @@ counters, and any background engine-thread failure.
 | `JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES` | `0` | Persist small compiled artifacts |
 | `XLA_PYTHON_CLIENT_PREALLOCATE` | `false` | Prevent eager full-device reservation |
 | `XLA_PYTHON_CLIENT_MEM_FRACTION` | `0.90` | Default memory ceiling for XLA allocation |
+| `XLA_FLAGS` | `--xla_gpu_enable_command_buffer=` (from `run_jllm_lane.sh`) | Disable the XLA command-buffer pass — working around intermittent `rocblas_gemm_ex failed` crashes on MI300X |
+| `ROCBLAS_USE_HIPBLASLT` | `0` (from `run_jllm_lane.sh`) | Fall back to rocBLAS classic; hipBLASLt has intermittent gemm failures on gfx942 |
+
+At boot `jllm-serve` pre-compiles every `(batch_bucket, context_bucket)` shape
+the scheduler can hit, so the first real request for any shape never pays JIT
+cost on the critical path. Pass `--no-prewarm` to skip this and let shapes
+compile lazily (useful for dev, not for benchmarks).
 
 ## Testing
 
@@ -92,13 +99,21 @@ much more predictable.
 
 `scripts/bench_vllm.py` compares `jllm` and vLLM with the same prompt sets.
 It supports both a running HTTP server and an in-process `jllm` engine.
+Pass `--jllm-only` to skip every vLLM call — warmup, measurement, metadata —
+when vLLM is not running.
 
 ```sh
 uv run python scripts/bench_vllm.py --mode sequential
 uv run python scripts/bench_vllm.py --mode concurrent --workload mixed --concurrency 1 2 4
 uv run python scripts/bench_vllm.py --mode chat
 uv run python scripts/bench_vllm.py --mode prefix_cache --prefix-len 256
+uv run python scripts/bench_vllm.py --mode concurrent --jllm-only --jllm-url http://127.0.0.1:8080
 ```
+
+The warmup pass exercises every `(concurrency, prompt)` pair the measurement
+will hit at the full `--max-new-tokens`, so every JIT shape is compiled before
+the timer starts. Without this, first-hit compile cost for large context
+buckets lands inside the measurement and flattens concurrency scaling.
 
 Structured output:
 
@@ -154,6 +169,12 @@ Each `jllm` lane gets its own persistent JAX compilation cache directory:
 - `JAX_COMPILATION_CACHE_DIR=/tmp/jllm-jax-cache/gpu<gpu>-port<port>`
 - `JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0`
 - `JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES=0`
+
+`run_vllm_lane.sh` launches `rocm/vllm-dev` as a detached Docker container (vLLM
+is not installed on the host on the reference droplet; the container image is
+the only place it lives). Weights mount read-only at `/weights` inside the
+container. Stop a lane with `docker stop "$VLLM_CONTAINER"` — default name is
+`jllm-vllm-lane-$VLLM_PORT`.
 
 From another shell on the remote host:
 

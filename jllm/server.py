@@ -242,6 +242,12 @@ def main():
     p.add_argument("--max-model-len", type=int, default=2048)
     p.add_argument("--max-prefill-len", type=int, default=512)
     p.add_argument("--dtype", choices=["bf16", "fp32"], default="bf16")
+    p.add_argument(
+        "--no-prewarm",
+        dest="prewarm",
+        action="store_false",
+        help="Skip JIT prewarm at startup. Default: prewarm every bucket shape.",
+    )
     args = p.parse_args()
 
     print(f"config: attention_impl={_INITIAL_CFG.attention_impl} "
@@ -257,6 +263,14 @@ def main():
         max_prefill_len=args.max_prefill_len,
         dtype=dtype,
     )
+    if args.prewarm:
+        n_shapes = len(driver.batch_buckets) * len(driver.context_buckets)
+        print(
+            f"prewarm: compiling {n_shapes} (batch x context) shapes for prefill+decode...",
+            flush=True,
+        )
+        elapsed = engine.prewarm(driver)
+        print(f"prewarm: done in {elapsed:.1f}s", flush=True)
     engine.start(driver)
 
     STATE["tok"] = tok

@@ -176,6 +176,42 @@ def start(driver: Driver) -> None:
     driver.thread.start()
 
 
+def prewarm(driver: Driver) -> float:
+    # Trigger JIT compile for every (batch_bucket, context_bucket) shape the
+    # scheduler can hit. Without this, the first real request for each unseen
+    # shape pays the compile cost inside its own latency, which crushes p95 on
+    # long prompts and on the first concurrent burst. All scatter writes land
+    # in sentinel block 0 (safe — inactive rows normally target it) and any
+    # gather reads come back from the same block; numeric output is discarded.
+    # Each donated input is rebuilt per-kernel call because the JIT wrappers
+    # donate everything except `model`.
+    bs = driver.block_size
+    t0 = time.perf_counter()
+    shapes = [(B, NB) for B in driver.batch_buckets for NB in driver.context_buckets]
+    for B, NB in shapes:
+        driver.state, _ = prefill(
+            driver.model,
+            driver.state,
+            jnp.zeros((B, bs), dtype=jnp.int32),      # chunk_ids
+            jnp.zeros((B,), dtype=jnp.int32),         # pos_starts
+            jnp.zeros((B, NB), dtype=jnp.int32),      # block_tables
+            jnp.zeros((B,), dtype=jnp.int32),         # valid_tokens
+            jnp.zeros((B,), dtype=jnp.int32),         # last_token_idx
+            jnp.zeros((B,), dtype=jnp.int32),         # phys_blocks
+        )
+        driver.state, _ = decode(
+            driver.model,
+            driver.state,
+            jnp.zeros((B, 1), dtype=jnp.int32),       # last_tokens
+            jnp.zeros((B,), dtype=jnp.int32),         # positions
+            jnp.zeros((B,), dtype=jnp.int32),         # valid_rows
+            jnp.zeros((B, NB), dtype=jnp.int32),      # block_tables
+            jnp.zeros((B,), dtype=jnp.int32),         # phys_blocks
+            jnp.zeros((B,), dtype=jnp.int32),         # slot_in_block
+        )
+    return time.perf_counter() - t0
+
+
 def stop(driver: Driver, join: bool = True) -> None:
     driver.stop_event.set()
     if join and driver.thread is not None:

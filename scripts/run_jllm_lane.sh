@@ -16,6 +16,13 @@ CACHE_ROOT="${JLLM_JAX_CACHE_ROOT:-/tmp/jllm-jax-cache}"
 CACHE_DIR="${JLLM_JAX_CACHE_DIR:-${CACHE_ROOT}/gpu${GPU}-port${PORT}}"
 PERSIST_MIN_COMPILE="${JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS:-0}"
 PERSIST_MIN_ENTRY="${JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES:-0}"
+# Disable XLA command-buffer scheduling and hipBLASLt. Both have been the
+# observed source of intermittent `rocblas_gemm_ex failed` crashes when the
+# engine is re-entered after a warm pytest rerun on MI300X. The overrides
+# land as env vars so a caller can unset them by exporting an empty value.
+XLA_FLAGS_DEFAULT="--xla_gpu_enable_command_buffer="
+XLA_FLAGS_VALUE="${XLA_FLAGS:-$XLA_FLAGS_DEFAULT}"
+ROCBLAS_USE_HIPBLASLT_VALUE="${ROCBLAS_USE_HIPBLASLT:-0}"
 LOG_PATH="${JLLM_LOG_PATH:-/tmp/jllm-${PORT}.log}"
 
 cmd=(
@@ -26,6 +33,8 @@ cmd=(
   "JAX_COMPILATION_CACHE_DIR=${CACHE_DIR}"
   "JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=${PERSIST_MIN_COMPILE}"
   "JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES=${PERSIST_MIN_ENTRY}"
+  "XLA_FLAGS=${XLA_FLAGS_VALUE}"
+  "ROCBLAS_USE_HIPBLASLT=${ROCBLAS_USE_HIPBLASLT_VALUE}"
   uv run jllm-serve
   --host "$HOST"
   --port "$PORT"

@@ -419,35 +419,58 @@ class InProcJllm:
 def _warmup(args, jllm, vllm_url: str, vllm_model: str) -> None:
     for _ in range(args.warmups):
         jllm.completion("hello", 4, state="warmup")
-        _vllm_completion(vllm_url, vllm_model, "hello", 4)
+        if not args.jllm_only:
+            _vllm_completion(vllm_url, vllm_model, "hello", 4)
 
 
-def _warmup_concurrency_levels(args, jllm, vllm_url: str, vllm_model: str) -> list[int]:
+def _warmup_concurrency_levels(
+    args,
+    jllm,
+    vllm_url: str,
+    vllm_model: str,
+    workload_prompts: list[str],
+) -> list[int]:
+    # Warm each concurrency level with the full measurement max_tokens and real
+    # workload prompts, so every (batch_bucket, context_bucket) shape the
+    # measurement will hit is JIT-compiled before the timer starts. Using
+    # max_tokens=4 / "hello" here leaves later shapes uncompiled and their
+    # first-hit compile cost lands inside the timed run.
     warmed: list[int] = []
+    max_new = args.max_new_tokens
+    pool_prompts = list(dict.fromkeys(workload_prompts)) or ["hello"]
     for concurrency in sorted(set(args.concurrency)):
         if concurrency <= 1:
             continue
-        prompts = ["hello"] * concurrency
+        prompts = (pool_prompts * ((concurrency // len(pool_prompts)) + 1))[:concurrency]
 
         def vllm_fn(prompt: str):
-            return _vllm_completion(vllm_url, vllm_model, prompt, 4)
+            return _vllm_completion(vllm_url, vllm_model, prompt, max_new)
 
         def jllm_fn(prompt: str):
-            return jllm.completion(prompt, 4, state=f"warmup-c{concurrency}")
+            return jllm.completion(prompt, max_new, state=f"warmup-c{concurrency}")
 
-        with ThreadPoolExecutor(max_workers=concurrency) as pool:
-            list(pool.map(vllm_fn, prompts))
+        if not args.jllm_only:
+            with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                list(pool.map(vllm_fn, prompts))
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             list(pool.map(jllm_fn, prompts))
         warmed.append(concurrency)
     return warmed
 
 
-def _warmup_unique_prompts(jllm, vllm_url: str, vllm_model: str, prompts: list[str], max_tokens: int = 4) -> int:
+def _warmup_unique_prompts(
+    jllm,
+    vllm_url: str,
+    vllm_model: str,
+    prompts: list[str],
+    max_tokens: int = 4,
+    skip_vllm: bool = False,
+) -> int:
     unique_prompts = list(dict.fromkeys(prompts))
     for prompt in unique_prompts:
         jllm.completion(prompt, max_tokens, state="warmup-prompts")
-        _vllm_completion(vllm_url, vllm_model, prompt, max_tokens)
+        if not skip_vllm:
+            _vllm_completion(vllm_url, vllm_model, prompt, max_tokens)
     return len(unique_prompts)
 
 
@@ -458,40 +481,56 @@ def run_sequential(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dic
 
     prompts: list[dict] = []
     for prompt in _prompt_pool(args.workload):
-        v_result = _vllm_completion(vllm_url, vllm_model, prompt, args.max_new_tokens)
+        v_result = (
+            None if args.jllm_only
+            else _vllm_completion(vllm_url, vllm_model, prompt, args.max_new_tokens)
+        )
         j_result = jllm.completion(prompt, args.max_new_tokens)
-        match_chars = 0
-        for left, right in zip(v_result["text"], j_result["text"]):
-            if left == right:
-                match_chars += 1
-            else:
-                break
-        prompts.append(
-            {
+        if v_result is not None:
+            match_chars = 0
+            for left, right in zip(v_result["text"], j_result["text"]):
+                if left == right:
+                    match_chars += 1
+                else:
+                    break
+            exact_match = j_result["text"] == v_result["text"]
+            prompts.append({
                 "prompt": prompt,
                 "vllm": v_result,
                 "jllm": j_result,
                 "match_chars": match_chars,
-                "exact_match": j_result["text"] == v_result["text"],
-            }
-        )
-        print(
-            f"prompt={prompt!r:50s}  "
-            f"vLLM {v_result['total_s']:.2f}s ({v_result['tok_per_s']:.1f} tok/s)  "
-            f"jllm {j_result['total_s']:.2f}s ({j_result['tok_per_s']:.1f} tok/s)  "
-            f"match={match_chars}/{min(len(v_result['text']), len(j_result['text']))}",
-            flush=True,
-        )
+                "exact_match": exact_match,
+            })
+            print(
+                f"prompt={prompt!r:50s}  "
+                f"vLLM {v_result['total_s']:.2f}s ({v_result['tok_per_s']:.1f} tok/s)  "
+                f"jllm {j_result['total_s']:.2f}s ({j_result['tok_per_s']:.1f} tok/s)  "
+                f"match={match_chars}/{min(len(v_result['text']), len(j_result['text']))}",
+                flush=True,
+            )
+        else:
+            prompts.append({"prompt": prompt, "jllm": j_result})
+            print(
+                f"prompt={prompt!r:50s}  "
+                f"jllm {j_result['total_s']:.2f}s ({j_result['tok_per_s']:.1f} tok/s)",
+                flush=True,
+            )
 
-    total_vllm_s = sum(row["vllm"]["total_s"] for row in prompts)
     total_jllm_s = sum(row["jllm"]["total_s"] for row in prompts)
-    total_vllm_toks = sum(row["vllm"]["n_tokens"] for row in prompts)
     total_jllm_toks = sum(row["jllm"]["n_tokens"] for row in prompts)
-    exact_matches = sum(1 for row in prompts if row["exact_match"])
     print()
-    print(f"TOTAL vLLM: {total_vllm_s:.2f}s  {total_vllm_toks} tok  {_tok_s(total_vllm_s, total_vllm_toks):.1f} tok/s")
+    if not args.jllm_only:
+        total_vllm_s = sum(row["vllm"]["total_s"] for row in prompts)
+        total_vllm_toks = sum(row["vllm"]["n_tokens"] for row in prompts)
+        exact_matches = sum(1 for row in prompts if row.get("exact_match"))
+        print(f"TOTAL vLLM: {total_vllm_s:.2f}s  {total_vllm_toks} tok  {_tok_s(total_vllm_s, total_vllm_toks):.1f} tok/s")
+    else:
+        total_vllm_s = 0.0
+        total_vllm_toks = 0
+        exact_matches = 0
     print(f"TOTAL jllm: {total_jllm_s:.2f}s  {total_jllm_toks} tok  {_tok_s(total_jllm_s, total_jllm_toks):.1f} tok/s")
-    print(f"exact text matches: {exact_matches}/{len(prompts)}")
+    if not args.jllm_only:
+        print(f"exact text matches: {exact_matches}/{len(prompts)}")
 
     result = {
         "mode": "sequential",
@@ -509,15 +548,21 @@ def run_sequential(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dic
             "exact_matches": exact_matches,
         },
     }
-    return (0 if exact_matches >= len(prompts) * 0.5 else 2), result
+    if args.jllm_only:
+        rc = 0
+    else:
+        rc = 0 if exact_matches >= len(prompts) * 0.5 else 2
+    return rc, result
 
 
 def run_concurrent(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dict]:
     prompts = _request_prompts(args.workload, args.num_requests)
     print("warming up...", flush=True)
     _warmup(args, jllm, vllm_url, vllm_model)
-    warmed_concurrency = _warmup_concurrency_levels(args, jllm, vllm_url, vllm_model)
-    warmed_prompts = _warmup_unique_prompts(jllm, vllm_url, vllm_model, prompts)
+    warmed_prompts = _warmup_unique_prompts(
+        jllm, vllm_url, vllm_model, prompts, skip_vllm=args.jllm_only
+    )
+    warmed_concurrency = _warmup_concurrency_levels(args, jllm, vllm_url, vllm_model, prompts)
     print("  warmed", flush=True)
     if warmed_concurrency:
         print(f"  concurrency buckets warmed: {warmed_concurrency}", flush=True)
@@ -536,7 +581,8 @@ def run_concurrent(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dic
         def jllm_fn(prompt: str):
             return jllm.completion(prompt, args.max_new_tokens)
 
-        for label, fn in [("vllm", vllm_fn), ("jllm", jllm_fn)]:
+        lanes = [("jllm", jllm_fn)] if args.jllm_only else [("vllm", vllm_fn), ("jllm", jllm_fn)]
+        for label, fn in lanes:
             t0 = time.perf_counter()
             results = []
             with ThreadPoolExecutor(max_workers=concurrency) as pool:
@@ -578,6 +624,14 @@ def run_chat(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dict]:
     jllm_turns = run_side(jllm.chat)
     for idx, response in enumerate(jllm_turns):
         print(f"[t{idx}] ({response['total_s']:.1f}s)\n{response['text']}\n")
+
+    if args.jllm_only:
+        turns = [{"turn": idx, "jllm": t} for idx, t in enumerate(jllm_turns)]
+        return 0, {
+            "mode": "chat",
+            "turns": turns,
+            "summary": {"exact_matches": 0, "num_turns": len(turns)},
+        }
 
     print("=== vllm ===", flush=True)
     vllm_turns = run_side(lambda messages, n: _vllm_chat(vllm_url, vllm_model, messages, n))
@@ -627,13 +681,14 @@ def run_prefix_cache(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, d
             flush=True,
         )
 
-    print("\n=== vllm (configure --enable-prefix-caching for a fair comparison) ===")
     vllm_rows = []
-    for idx, suffix in enumerate(suffixes):
-        result = _vllm_completion(vllm_url, vllm_model, prefix + suffix, args.max_new_tokens)
-        result["state"] = "cold" if idx == 0 else "warm"
-        vllm_rows.append(result)
-        print(f"  vllm req{idx:02d}  total={result['total_s']:.2f}s  tok/s={result['tok_per_s']:.1f}", flush=True)
+    if not args.jllm_only:
+        print("\n=== vllm (configure --enable-prefix-caching for a fair comparison) ===")
+        for idx, suffix in enumerate(suffixes):
+            result = _vllm_completion(vllm_url, vllm_model, prefix + suffix, args.max_new_tokens)
+            result["state"] = "cold" if idx == 0 else "warm"
+            vllm_rows.append(result)
+            print(f"  vllm req{idx:02d}  total={result['total_s']:.2f}s  tok/s={result['tok_per_s']:.1f}", flush=True)
 
     warm_ttfts = [row["ttft_s"] for row in jllm_rows[1:] if row.get("ttft_s") is not None]
     summary = {
@@ -659,6 +714,11 @@ def main() -> int:
                         help="Model name to put in OpenAI-shaped requests (HTTP mode only)")
     parser.add_argument("--vllm-url", default="http://127.0.0.1:8020")
     parser.add_argument("--vllm-model-name", default="qwen32b")
+    parser.add_argument(
+        "--jllm-only",
+        action="store_true",
+        help="Skip all vLLM calls (warmup, measurement, metadata). Use when vLLM is not running.",
+    )
     parser.add_argument("--model-path", default="weights/Qwen2.5-32B-Instruct")
     parser.add_argument("--max-num-seqs", type=int, default=4)
     parser.add_argument("--max-model-len", type=int, default=4096)
@@ -702,7 +762,7 @@ def main() -> int:
     finally:
         stop_fn()
 
-    vllm_health = _safe_health(args.vllm_url)
+    vllm_health = {} if args.jllm_only else _safe_health(args.vllm_url)
     jllm_info = jllm.info()
     if args.jllm_url is not None:
         jllm_info.update(

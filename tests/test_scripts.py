@@ -105,7 +105,7 @@ def test_concurrency_warmup_skips_bucket_one(monkeypatch):
             calls.append(("jllm", state))
             return {"text": "", "total_s": 0.01, "n_tokens": max_tokens, "tok_per_s": 100.0, "state": state}
 
-    args = SimpleNamespace(concurrency=[1, 4, 4], warmups=1)
+    args = SimpleNamespace(concurrency=[1, 4, 4], warmups=1, max_new_tokens=8, jllm_only=False)
 
     monkeypatch.setattr(
         bench,
@@ -119,7 +119,9 @@ def test_concurrency_warmup_skips_bucket_one(monkeypatch):
         },
     )
 
-    warmed = bench._warmup_concurrency_levels(args, DummyJllm(), "http://127.0.0.1:8020", "qwen32b")
+    warmed = bench._warmup_concurrency_levels(
+        args, DummyJllm(), "http://127.0.0.1:8020", "qwen32b", ["hello"]
+    )
 
     assert warmed == [4]
     assert calls.count(("vllm", "warmup")) == 4
@@ -234,8 +236,10 @@ def test_remote_vllm_script_dry_run():
             "VLLM_MODEL_NAME": "qwen32b-lane",
         },
     )
+    assert "docker run" in out
     assert "HIP_VISIBLE_DEVICES=3" in out
-    assert "/usr/local/bin/vllm serve /weights/Qwen2.5-32B-Instruct" in out or "vllm serve /weights/Qwen2.5-32B-Instruct" in out
+    assert "vllm serve /weights/Qwen2.5-32B-Instruct" in out
     assert "--port 9020" in out
     assert "--served-model-name qwen32b-lane" in out
-    assert "/tmp/vllm-9020.log" in out
+    assert "--network host" in out
+    assert "/dev/kfd" in out
