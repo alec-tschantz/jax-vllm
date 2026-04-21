@@ -1,31 +1,27 @@
-"""Paged-attention kernels: extend_step (chunked prefill) + decode_step_cb.
+"""Paged-attention kernels: batched prefill + packed decode.
 
-One KV world: a pool of fixed-size blocks (see paged.py) indexed via
-`block_tables[slot, NB_MAX]`. Two kernels:
+Two kernels cover the hot path:
 
-- `extend_step`: advances one slot by `chunk_size == block_size` tokens.
-  Writes Q*block_size tokens' K/V into ONE physical block, gathers the full
-  prefix via block_tables, computes attention with causal + real-mask, returns
-  logits for every query position so the caller can pick the last real token
-  on the final chunk.
+- `prefill_step`: advances B prefilling slots by one `block_size` chunk each.
+  Each row writes into one fresh physical block, gathers the full prefix via
+  block_tables, and returns the next token from the last valid query position.
+- `decode_step_cb`: advances B decoding slots by one token each.
 
-- `decode_step_cb`: one token per slot across all B decoding slots. Writes at
-  (phys_block[b], slot_in_block[b]), gathers prefix, masks by positions[b].
+Unused padded rows may target the sentinel block 0; those writes are harmless.
 
-Both rely on the sentinel-block-0 convention: unused block_table entries point
-at block 0 and the positional mask (`k_pos <= positions[b]`) drops them.
+This module is model-family agnostic. It only depends on the generic
+decoder-only interface defined in `jllm.model.common`.
 """
 import equinox as eqx
 from jax import Array
 from jax import numpy as jnp
 
-from typing import Union
-
 from ..model.common import (
     Attention,
     DecoderLayer,
+    DecoderOnlyModel,
     apply_rope,
-    attention_kernel,
+    attention_kernel_causal,
     embed,
     linear,
     maybe_qk_norm,
@@ -33,95 +29,101 @@ from ..model.common import (
     rope_cos_sin,
     swiglu,
 )
-from ..model.qwen2 import Qwen2Model
-from ..model.qwen3 import Qwen3Model
-from .paged import PagedCache, PagedLayerCache, gather_kv, scatter_kv_decode, scatter_kv_prefill
+from .paged import (
+    PagedCache,
+    PagedLayerCache,
+    gather_kv,
+    scatter_kv_decode,
+    scatter_kv_prefill_batch,
+)
 
-# The engine is arch-agnostic: it takes any model that exposes
-# `embed_tokens`, `layers: list[DecoderLayer]`, `norm`, `rotary_emb`, `lm_head`.
-Model = Union[Qwen2Model, Qwen3Model]
-
-
-# ---------- chunked prefill (one slot, one chunk) ----------
-
-
-def attention_extend(
+def attention_prefill(
     a: Attention,
-    hidden: Array,          # [1, C, D]
-    cos: Array,             # [1, C, D_head]
+    hidden: Array,          # [B, C, D]
+    cos: Array,             # [B, C, D_head]
     sin: Array,
     layer: PagedLayerCache,
-    q_pos: Array,           # [1, C] int32 — absolute positions of chunk tokens
-    block_table_row: Array, # [NB_MAX] int32
-    phys_block: Array,      # scalar int32 — the one physical block this chunk writes into
+    q_pos: Array,           # [B, C] int32
+    valid_tokens: Array,    # [B] int32
+    block_tables: Array,    # [B, NB_MAX] int32
+    phys_blocks: Array,     # [B] int32
 ) -> tuple[Array, PagedLayerCache]:
-    _, C, _ = hidden.shape
-    q = linear(a.q_proj, hidden).reshape(1, C, a.num_heads, a.head_dim).transpose(0, 2, 1, 3)
-    k_new = linear(a.k_proj, hidden).reshape(1, C, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
-    v_new = linear(a.v_proj, hidden).reshape(1, C, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
-    q, k_new = maybe_qk_norm(a, q, k_new)  # no-op on Qwen2 (q_norm is None)
+    B, C, _ = hidden.shape
+    q = linear(a.q_proj, hidden).reshape(B, C, a.num_heads, a.head_dim).transpose(0, 2, 1, 3)
+    k_new = linear(a.k_proj, hidden).reshape(B, C, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
+    v_new = linear(a.v_proj, hidden).reshape(B, C, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
+    q, k_new = maybe_qk_norm(a, q, k_new)
     q, k_new = apply_rope(q, k_new, cos, sin)
 
-    # Scatter this chunk's C tokens into phys_block[0..C-1]. scatter_kv_prefill
-    # expects [1, T, H_kv, D] (heads-third) with T a multiple of block_size; we
-    # pass block_indices = [phys_block] so nb = 1 and T = block_size = C.
     k_scatter = k_new.transpose(0, 2, 1, 3)
     v_scatter = v_new.transpose(0, 2, 1, 3)
-    new_layer = scatter_kv_prefill(layer, k_scatter, v_scatter, phys_block[None])
+    new_layer = scatter_kv_prefill_batch(layer, k_scatter, v_scatter, phys_blocks)
 
-    # Gather the full prefix (incl. this chunk which we just wrote).
-    k_all, v_all = gather_kv(new_layer, block_table_row[None, :])
+    k_all, v_all = gather_kv(new_layer, block_tables)
     k_all = k_all.transpose(0, 2, 1, 3)
     v_all = v_all.transpose(0, 2, 1, 3)
 
-    # Causal only. Padding-Q rows always attend to at least their own position
-    # (never all-False, so no NaN from softmax); their outputs are discarded.
-    L = k_all.shape[2]
-    k_pos = jnp.arange(L)
-    q_abs = q_pos[0]
-    mask = k_pos[None, None, None, :] <= q_abs[None, None, :, None]
-
-    out = attention_kernel(q, k_all, v_all, mask, a.head_dim, a.num_heads, a.num_kv_heads)
-    out = out.transpose(0, 2, 1, 3).reshape(1, C, -1)
+    q_lens = valid_tokens.astype(jnp.int32)
+    k_lens = q_pos[:, 0].astype(jnp.int32) + q_lens
+    out = attention_kernel_causal(
+        q,
+        k_all,
+        v_all,
+        a.head_dim,
+        a.num_heads,
+        a.num_kv_heads,
+        q_lens=q_lens,
+        k_lens=k_lens,
+    )
+    query_mask = (jnp.arange(C, dtype=jnp.int32)[None, :] < q_lens[:, None])[:, None, :, None]
+    out = jnp.where(query_mask, out, 0)
+    out = out.transpose(0, 2, 1, 3).reshape(B, C, -1)
     return linear(a.o_proj, out), new_layer
 
 
-def decoder_layer_extend(
-    d: DecoderLayer, hidden, cos, sin, layer, q_pos, block_table_row, phys_block,
+def decoder_layer_prefill(
+    d: DecoderLayer, hidden, cos, sin, layer, q_pos, valid_tokens, block_tables, phys_blocks,
 ):
-    h, new_layer = attention_extend(
-        d.self_attn, rms_norm(d.input_layernorm, hidden), cos, sin, layer,
-        q_pos, block_table_row, phys_block,
+    h, new_layer = attention_prefill(
+        d.self_attn,
+        rms_norm(d.input_layernorm, hidden),
+        cos,
+        sin,
+        layer,
+        q_pos,
+        valid_tokens,
+        block_tables,
+        phys_blocks,
     )
     hidden = hidden + h
     hidden = hidden + swiglu(d.mlp, rms_norm(d.post_attention_layernorm, hidden))
     return hidden, new_layer
 
 
-def extend_step(
-    m: Model,
-    chunk_ids: Array,         # [1, C] int32
+def prefill_step(
+    m: DecoderOnlyModel,
+    chunk_ids: Array,         # [B, C] int32
     cache: PagedCache,
-    block_table_row: Array,   # [NB_MAX] int32
-    pos_start: Array,         # scalar int32 — absolute position of chunk_ids[0]
-    phys_block: Array,        # scalar int32 — physical block this chunk writes into
+    block_tables: Array,      # [B, NB_MAX] int32
+    pos_starts: Array,        # [B] int32
+    valid_tokens: Array,      # [B] int32
+    last_token_idx: Array,    # [B] int32
+    phys_blocks: Array,       # [B] int32
 ) -> tuple[Array, PagedCache]:
     _, C = chunk_ids.shape
     hidden = embed(m.embed_tokens, chunk_ids)
-    q_pos = (pos_start + jnp.arange(C, dtype=jnp.int32))[None, :]
+    q_pos = pos_starts[:, None] + jnp.arange(C, dtype=jnp.int32)[None, :]
     cos, sin = rope_cos_sin(m.rotary_emb, q_pos, hidden.dtype)
     new_layers: list[PagedLayerCache] = []
-    for layer, lc in zip(m.layers, cache.layers):
-        hidden, lc = decoder_layer_extend(
-            layer, hidden, cos, sin, lc, q_pos, block_table_row, phys_block
+    for layer, layer_cache in zip(m.layers, cache.layers):
+        hidden, layer_cache = decoder_layer_prefill(
+            layer, hidden, cos, sin, layer_cache, q_pos, valid_tokens, block_tables, phys_blocks
         )
-        new_layers.append(lc)
+        new_layers.append(layer_cache)
     hidden = rms_norm(m.norm, hidden)
-    logits = linear(m.lm_head, hidden)  # [1, C, V]
-    return logits, PagedCache(layers=new_layers, block_size=cache.block_size)
-
-
-# ---------- fused continuous-batching decode ----------
+    last_hidden = hidden[jnp.arange(hidden.shape[0], dtype=jnp.int32), last_token_idx]
+    next_toks = jnp.argmax(linear(m.lm_head, last_hidden), axis=-1).astype(jnp.int32)
+    return next_toks, PagedCache(layers=new_layers, block_size=cache.block_size)
 
 
 def attention_decode_cb(
@@ -131,6 +133,7 @@ def attention_decode_cb(
     sin: Array,
     layer: PagedLayerCache,
     positions: Array,       # [B] int32
+    valid_rows: Array,      # [B] int32
     block_tables: Array,    # [B, NB_MAX] int32
     phys_block: Array,      # [B] int32
     slot_in_block: Array,   # [B] int32
@@ -139,32 +142,49 @@ def attention_decode_cb(
     q = linear(a.q_proj, hidden).reshape(B, 1, a.num_heads, a.head_dim).transpose(0, 2, 1, 3)
     k_new = linear(a.k_proj, hidden).reshape(B, 1, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
     v_new = linear(a.v_proj, hidden).reshape(B, 1, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
-    q, k_new = maybe_qk_norm(a, q, k_new)  # no-op on Qwen2
+    q, k_new = maybe_qk_norm(a, q, k_new)
     q, k_new = apply_rope(q, k_new, cos, sin)
 
-    # scatter_kv_decode expects [B, 1, H_kv, D] (heads-third).
     k_scatter = k_new.transpose(0, 2, 1, 3)
     v_scatter = v_new.transpose(0, 2, 1, 3)
     new_layer = scatter_kv_decode(layer, k_scatter, v_scatter, phys_block, slot_in_block)
 
-    # gather_kv returns [B, NB_MAX*block_size, H_kv, D]; transpose to heads-second.
     k_all, v_all = gather_kv(new_layer, block_tables)
     k_all = k_all.transpose(0, 2, 1, 3)
     v_all = v_all.transpose(0, 2, 1, 3)
 
-    L = k_all.shape[2]
-    k_pos = jnp.arange(L)
-    mask = k_pos[None, None, None, :] <= positions[:, None, None, None]
-
-    out = attention_kernel(q, k_all, v_all, mask, a.head_dim, a.num_heads, a.num_kv_heads)
+    q_lens = valid_rows.astype(jnp.int32)
+    k_lens = q_lens * (positions.astype(jnp.int32) + 1)
+    out = attention_kernel_causal(
+        q,
+        k_all,
+        v_all,
+        a.head_dim,
+        a.num_heads,
+        a.num_kv_heads,
+        q_lens=q_lens,
+        k_lens=k_lens,
+    )
+    out = jnp.where(valid_rows[:, None, None, None].astype(bool), out, 0)
     out = out.transpose(0, 2, 1, 3).reshape(B, 1, -1)
     return linear(a.o_proj, out), new_layer
 
 
-def decoder_layer_decode_cb(d: DecoderLayer, hidden, cos, sin, layer, positions, block_tables, phys_block, slot_in_block):
+def decoder_layer_decode_cb(
+    d: DecoderLayer,
+    hidden,
+    cos,
+    sin,
+    layer,
+    positions,
+    valid_rows,
+    block_tables,
+    phys_block,
+    slot_in_block,
+):
     h, new_layer = attention_decode_cb(
         d.self_attn, rms_norm(d.input_layernorm, hidden), cos, sin, layer,
-        positions, block_tables, phys_block, slot_in_block,
+        positions, valid_rows, block_tables, phys_block, slot_in_block,
     )
     hidden = hidden + h
     hidden = hidden + swiglu(d.mlp, rms_norm(d.post_attention_layernorm, hidden))
@@ -172,10 +192,11 @@ def decoder_layer_decode_cb(d: DecoderLayer, hidden, cos, sin, layer, positions,
 
 
 def decode_step_cb(
-    m: Model,
+    m: DecoderOnlyModel,
     last_tokens: Array,
     cache: PagedCache,
     positions: Array,
+    valid_rows: Array,
     block_tables: Array,
     phys_block: Array,
     slot_in_block: Array,
@@ -185,14 +206,23 @@ def decode_step_cb(
     q_pos = positions[:, None]
     cos, sin = rope_cos_sin(m.rotary_emb, q_pos, hidden.dtype)
     new_layers: list[PagedLayerCache] = []
-    for layer, lc in zip(m.layers, cache.layers):
-        hidden, lc = decoder_layer_decode_cb(
-            layer, hidden, cos, sin, lc, positions, block_tables, phys_block, slot_in_block
+    for layer, layer_cache in zip(m.layers, cache.layers):
+        hidden, layer_cache = decoder_layer_decode_cb(
+            layer,
+            hidden,
+            cos,
+            sin,
+            layer_cache,
+            positions,
+            valid_rows,
+            block_tables,
+            phys_block,
+            slot_in_block,
         )
-        new_layers.append(lc)
+        new_layers.append(layer_cache)
     hidden = rms_norm(m.norm, hidden)
     return linear(m.lm_head, hidden), PagedCache(layers=new_layers, block_size=cache.block_size)
 
 
-extend_step_jit = eqx.filter_jit(extend_step)
-decode_step_cb_jit = eqx.filter_jit(decode_step_cb)
+prefill_step_jit = eqx.filter_jit(prefill_step, donate="all-except-first")
+decode_step_cb_jit = eqx.filter_jit(decode_step_cb, donate="all-except-first")

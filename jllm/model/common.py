@@ -7,14 +7,13 @@ and their own `{Arch}Config` / `{Arch}Model` wrappers.
 
 Attention kernel selection is env-driven:
 
-    JLLM_ATTENTION_IMPL = einsum (default) | sdpa | aiter
+    JLLM_ATTENTION_IMPL = einsum (default) | sdpa
 
 `einsum` is our reference path (bf16 params/acts, fp32 softmax + RMSNorm).
-`sdpa` dispatches to `jax.nn.dot_product_attention`. `aiter` (when the PoC
-lands) calls AMD's AITER flash-attention via jax_aiter.
+`sdpa` dispatches to `jax.nn.dot_product_attention`.
 """
 import os
-from typing import Optional
+from typing import Optional, Protocol, Sequence
 
 import equinox as eqx
 import jax
@@ -42,6 +41,12 @@ class RMSNorm(eqx.Module):
 class RotaryEmbedding(eqx.Module):
     dim: int
     theta: float
+
+
+class KVCacheConfig(Protocol):
+    num_hidden_layers: int
+    num_kv_heads: int
+    head_dim: int
 
 
 # ---------- primitives ----------
@@ -124,12 +129,62 @@ class DecoderLayer(eqx.Module):
     post_attention_layernorm: RMSNorm
 
 
+class DecoderOnlyModel(Protocol):
+    embed_tokens: Embedding
+    layers: Sequence[DecoderLayer]
+    norm: RMSNorm
+    rotary_emb: RotaryEmbedding
+    lm_head: Linear
+    cfg: KVCacheConfig
+
+
 def maybe_qk_norm(a: Attention, q: Array, k: Array) -> tuple[Array, Array]:
     """Apply Qwen3-style RMSNorm to Q/K if present, else pass through."""
     if a.q_norm is not None:
         q = rms_norm(a.q_norm, q)
         k = rms_norm(a.k_norm, k)
     return q, k
+
+
+def decoder_attention(a: Attention, hidden: Array, cos: Array, sin: Array, mask: Array) -> Array:
+    B, T, _ = hidden.shape
+    q = linear(a.q_proj, hidden).reshape(B, T, a.num_heads, a.head_dim).transpose(0, 2, 1, 3)
+    k = linear(a.k_proj, hidden).reshape(B, T, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
+    v = linear(a.v_proj, hidden).reshape(B, T, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
+    q, k = maybe_qk_norm(a, q, k)
+    q, k = apply_rope(q, k, cos, sin)
+    out = attention_kernel(q, k, v, mask, a.head_dim, a.num_heads, a.num_kv_heads)
+    out = out.transpose(0, 2, 1, 3).reshape(B, T, -1)
+    return linear(a.o_proj, out)
+
+
+def decoder_layer_forward(d: DecoderLayer, hidden: Array, cos: Array, sin: Array, mask: Array) -> Array:
+    hidden = hidden + decoder_attention(d.self_attn, rms_norm(d.input_layernorm, hidden), cos, sin, mask)
+    hidden = hidden + swiglu(d.mlp, rms_norm(d.post_attention_layernorm, hidden))
+    return hidden
+
+
+def decoder_only_forward(
+    m,
+    input_ids: Array,
+    attention_mask: Optional[Array] = None,
+    position_ids: Optional[Array] = None,
+) -> Array:
+    B, T = input_ids.shape
+    if position_ids is None:
+        position_ids = jnp.broadcast_to(jnp.arange(T), (B, T))
+
+    if attention_mask is None:
+        attention_mask = jnp.ones((B, T), dtype=bool)
+
+    causal = jnp.tril(jnp.ones((T, T), dtype=bool))
+    mask = causal[None, None, :, :] & attention_mask.astype(bool)[:, None, None, :]
+    hidden = embed(m.embed_tokens, input_ids)
+    cos, sin = rope_cos_sin(m.rotary_emb, position_ids, hidden.dtype)
+    for layer in m.layers:
+        hidden = decoder_layer_forward(layer, hidden, cos, sin, mask)
+    hidden = rms_norm(m.norm, hidden)
+    return linear(m.lm_head, hidden)
 
 
 # ---------- attention kernel (shared across archs) ----------
@@ -156,11 +211,54 @@ def _attn_sdpa(q: Array, k: Array, v: Array, mask: Array, head_dim: int) -> Arra
     return jnp.transpose(out, (0, 2, 1, 3))
 
 
+def _repeat_kv_heads(
+    k: Array,
+    v: Array,
+    num_heads: int,
+    num_kv_heads: int,
+) -> tuple[Array, Array]:
+    if num_kv_heads == num_heads:
+        return k, v
+    rep = num_heads // num_kv_heads
+    return jnp.repeat(k, rep, axis=1), jnp.repeat(v, rep, axis=1)
+
+
+def causal_mask_from_lens(q_lens: Array, k_lens: Array, max_q: int, max_k: int) -> Array:
+    q_idx = jnp.arange(max_q, dtype=jnp.int32)[None, :, None]
+    k_idx = jnp.arange(max_k, dtype=jnp.int32)[None, None, :]
+    q_lens = q_lens.astype(jnp.int32)[:, None, None]
+    k_lens = k_lens.astype(jnp.int32)[:, None, None]
+    start = k_lens - q_lens
+    q_valid = q_idx < q_lens
+    k_valid = k_idx < k_lens
+    causal = k_idx <= (start + q_idx)
+    return (q_valid & k_valid & causal)[:, None, :, :]
+
+
 # A/B on MI300X + ROCm JAX 0.9.2: einsum + jnp.repeat beats SDPA by ~5-13% at
 # B=1..4 and ties at B=16 — keep einsum as default. Read once at import time
 # via JLLM_ATTENTION_IMPL; no hot-swap at runtime because switching under JIT
 # would recompile every kernel.
-ATTENTION_IMPL = os.environ.get("JLLM_ATTENTION_IMPL", "einsum")
+ATTENTION_IMPL = os.environ.get("JLLM_ATTENTION_IMPL", "einsum").lower()
+
+
+def attention_kernel_causal(
+    q: Array,
+    k: Array,
+    v: Array,
+    head_dim: int,
+    num_heads: int,
+    num_kv_heads: int,
+    q_lens: Optional[Array] = None,
+    k_lens: Optional[Array] = None,
+) -> Array:
+    if q_lens is None:
+        q_lens = jnp.full((q.shape[0],), q.shape[2], dtype=jnp.int32)
+    if k_lens is None:
+        k_lens = jnp.full((k.shape[0],), k.shape[2], dtype=jnp.int32)
+
+    mask = causal_mask_from_lens(q_lens, k_lens, q.shape[2], k.shape[2])
+    return attention_kernel(q, k, v, mask, head_dim, num_heads, num_kv_heads)
 
 
 def attention_kernel(
@@ -169,10 +267,5 @@ def attention_kernel(
     if ATTENTION_IMPL == "sdpa":
         # SDPA handles GQA natively.
         return _attn_sdpa(q, k, v, mask, head_dim)
-    # einsum path (also current fallback for "aiter" until the PoC wire-up lands).
-    # einsum needs matched head counts.
-    if num_kv_heads != num_heads:
-        rep = num_heads // num_kv_heads
-        k = jnp.repeat(k, rep, axis=1)
-        v = jnp.repeat(v, rep, axis=1)
+    k, v = _repeat_kv_heads(k, v, num_heads, num_kv_heads)
     return _attn_einsum(q, k, v, mask, head_dim)

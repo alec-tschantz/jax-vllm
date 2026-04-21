@@ -1,4 +1,3 @@
-import os
 import threading
 
 import jax.numpy as jnp
@@ -6,9 +5,8 @@ import pytest
 
 from jllm.engine import engine
 from jllm.engine.request import SamplingParams
-from jllm.model.weights import load_from_path
 
-MODEL_PATH = os.environ.get("PARITY_MODEL", "weights/Qwen2.5-0.5B-Instruct")
+pytestmark = pytest.mark.engine
 
 PROMPTS = [
     [785, 6722, 315, 9625, 374],
@@ -19,13 +17,8 @@ PROMPTS = [
 MAX_NEW = 6
 
 
-@pytest.fixture(scope="module")
-def model():
-    return load_from_path(MODEL_PATH, dtype=jnp.float32)
-
-
-def test_threaded_requests_produce_correct_outputs(model):
-    driver = engine.make_driver(model, max_num_seqs=2, max_model_len=32, dtype=jnp.float32)
+def test_threaded_requests_produce_correct_outputs(jx_model_fp32):
+    driver = engine.make_driver(jx_model_fp32, max_num_seqs=2, max_model_len=32, dtype=jnp.float32)
     engine.start(driver)
     try:
         solo_outputs: list[list[int]] = []

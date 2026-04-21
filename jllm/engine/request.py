@@ -23,3 +23,19 @@ class StepEvent:
     request_id: int
     token: int
     finished: bool
+
+
+@dataclass
+class EngineStats:
+    admissions: int = 0
+    scheduler_loops: int = 0
+    prefill_batches: int = 0
+    decode_batches: int = 0
+    prefill_slots_total: int = 0
+    decode_slots_total: int = 0
+    prefill_padding_slots_total: int = 0
+    decode_padding_slots_total: int = 0
+    extend_calls: int = 0
+    decode_calls: int = 0
+    emitted_tokens: int = 0
+    cache_hit_blocks: int = 0

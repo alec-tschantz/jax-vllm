@@ -20,14 +20,9 @@ from .common import (
     Linear,
     RMSNorm,
     RotaryEmbedding,
-    apply_rope,
-    attention_kernel,
-    embed,
-    linear,
-    maybe_qk_norm,
-    rms_norm,
-    rope_cos_sin,
-    swiglu,
+    decoder_attention,
+    decoder_layer_forward,
+    decoder_only_forward,
 )
 
 
@@ -77,21 +72,11 @@ class Qwen2Model(eqx.Module):
 
 
 def attention(a: Attention, hidden: Array, cos: Array, sin: Array, mask: Array) -> Array:
-    B, T, _ = hidden.shape
-    q = linear(a.q_proj, hidden).reshape(B, T, a.num_heads, a.head_dim).transpose(0, 2, 1, 3)
-    k = linear(a.k_proj, hidden).reshape(B, T, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
-    v = linear(a.v_proj, hidden).reshape(B, T, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
-    q, k = maybe_qk_norm(a, q, k)  # no-op for Qwen2 (q_norm/k_norm are None)
-    q, k = apply_rope(q, k, cos, sin)
-    out = attention_kernel(q, k, v, mask, a.head_dim, a.num_heads, a.num_kv_heads)
-    out = out.transpose(0, 2, 1, 3).reshape(B, T, -1)
-    return linear(a.o_proj, out)
+    return decoder_attention(a, hidden, cos, sin, mask)
 
 
 def decoder_layer(d: DecoderLayer, hidden: Array, cos: Array, sin: Array, mask: Array) -> Array:
-    hidden = hidden + attention(d.self_attn, rms_norm(d.input_layernorm, hidden), cos, sin, mask)
-    hidden = hidden + swiglu(d.mlp, rms_norm(d.post_attention_layernorm, hidden))
-    return hidden
+    return decoder_layer_forward(d, hidden, cos, sin, mask)
 
 
 def forward(
@@ -100,18 +85,4 @@ def forward(
     attention_mask: Optional[Array] = None,
     position_ids: Optional[Array] = None,
 ) -> Array:
-    B, T = input_ids.shape
-    if position_ids is None:
-        position_ids = jnp.broadcast_to(jnp.arange(T), (B, T))
-    if attention_mask is None:
-        attention_mask = jnp.ones((B, T), dtype=bool)
-
-    causal = jnp.tril(jnp.ones((T, T), dtype=bool))
-    mask = causal[None, None, :, :] & attention_mask.astype(bool)[:, None, None, :]
-
-    hidden = embed(m.embed_tokens, input_ids)
-    cos, sin = rope_cos_sin(m.rotary_emb, position_ids, hidden.dtype)
-    for layer in m.layers:
-        hidden = decoder_layer(layer, hidden, cos, sin, mask)
-    hidden = rms_norm(m.norm, hidden)
-    return linear(m.lm_head, hidden)
+    return decoder_only_forward(m, input_ids, attention_mask, position_ids)
