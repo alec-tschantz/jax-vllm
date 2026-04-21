@@ -47,6 +47,7 @@ def test_bench_json_output(tmp_path, monkeypatch):
     monkeypatch.setattr(bench, "HTTPJllm", lambda url, model_name: DummyJllm())
     monkeypatch.setattr(bench, "_safe_health", lambda url: {"status": "ok"})
     monkeypatch.setattr(bench, "_git_sha", lambda: "deadbeef")
+    monkeypatch.setattr(bench, "_runner_metadata", lambda: {"host": "gpu-test", "cwd": "/srv/jax-vllm"})
     monkeypatch.setattr(
         bench,
         "run_sequential",
@@ -73,8 +74,10 @@ def test_bench_json_output(tmp_path, monkeypatch):
     assert rc == 0
     assert payload["metadata"]["label"] == "smoke"
     assert payload["metadata"]["git_sha"] == "deadbeef"
+    assert payload["metadata"]["runner"] == {"host": "gpu-test", "cwd": "/srv/jax-vllm"}
     assert payload["metadata"]["workload"] == "balanced"
     assert payload["metadata"]["jllm_stats_delta"]["decode_batches"] == 1
+    assert payload["metadata"]["token_metrics"]["budgeted"] == "num_requests * max_new_tokens"
     assert payload["result"]["summary"]["jllm_tok_per_s"] == 1.0
 
 
@@ -171,6 +174,28 @@ def test_stats_delta_uses_zero_for_missing_keys():
     }
 
 
+def test_concurrent_row_tracks_observed_and_budget_tokens():
+    bench = _load_module(SCRIPTS_DIR / "bench_vllm.py", "bench_vllm_concurrent_row_test")
+
+    row = bench._concurrent_row(
+        "jllm",
+        concurrency=4,
+        results=[
+            {"n_tokens": 2, "total_s": 0.4},
+            {"n_tokens": 3, "total_s": 0.6},
+        ],
+        wall_s=1.0,
+        max_new_tokens=4,
+    )
+
+    assert row["tokens"] == 5
+    assert row["tok_per_s"] == 5.0
+    assert row["observed_tokens"] == 5
+    assert row["observed_tok_per_s"] == 5.0
+    assert row["budget_tokens"] == 8
+    assert row["budget_tok_per_s"] == 8.0
+
+
 def test_sync_script_dry_run():
     out = _run_script(
         "sync.sh",
@@ -198,7 +223,6 @@ def test_remote_jllm_script_dry_run():
     assert "JAX_COMPILATION_CACHE_DIR=/tmp/jax-cache/gpu2-port8182" in out
     assert "--port 8182" in out
     assert "/tmp/jllm-8182.log" in out
-
 
 def test_remote_vllm_script_dry_run():
     out = _run_script(

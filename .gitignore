@@ -49,3 +49,6 @@ scratch/
 .jax_cache/
 jllm-jit-cache/
 jit_cache/
+
+# Local notes
+NOTES.md

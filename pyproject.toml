@@ -42,6 +42,12 @@ packages = ["jllm"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = '--strict-markers -m "not engine and not parity and not remote"'
+markers = [
+    "engine: weight-backed jllm engine tests",
+    "parity: Hugging Face parity tests",
+    "remote: long-running or remote-only checks",
+]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

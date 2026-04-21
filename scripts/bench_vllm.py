@@ -3,6 +3,7 @@ import argparse
 from dataclasses import asdict
 import json
 import os
+import socket
 import statistics
 import subprocess
 import sys
@@ -11,6 +12,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 BALANCED_PROMPTS = [
     "The capital of France is",
@@ -119,6 +121,60 @@ def _write_json(path: str, payload: dict) -> None:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def _runner_metadata() -> dict:
+    return {
+        "host": socket.gethostname(),
+        "cwd": str(Path.cwd()),
+    }
+
+
+def _port_for_url(url: str) -> Optional[int]:
+    try:
+        return urlparse(url).port
+    except Exception:
+        return None
+
+
+def _lane_metadata(url: str, model: str, health: dict, lane_type: str, gpu: Optional[int]) -> dict:
+    return {
+        "url": url,
+        "model": model,
+        "port": _port_for_url(url),
+        "gpu": gpu,
+        "lane_type": lane_type,
+        "health": health,
+    }
+
+
+def _concurrent_row(
+    label: str,
+    concurrency: int,
+    results: list[dict],
+    wall_s: float,
+    max_new_tokens: int,
+) -> dict:
+    observed_tokens = sum(response["n_tokens"] for response in results)
+    budget_tokens = len(results) * max_new_tokens
+    latencies = sorted(response["total_s"] for response in results)
+    p50 = statistics.median(latencies) if latencies else 0.0
+    p95 = latencies[int(0.95 * len(latencies)) - 1] if latencies else 0.0
+    return {
+        "system": label,
+        "concurrency": concurrency,
+        "num_requests": len(results),
+        "wall_s": wall_s,
+        "tokens": observed_tokens,
+        "tok_per_s": _tok_s(wall_s, observed_tokens),
+        "observed_tokens": observed_tokens,
+        "observed_tok_per_s": _tok_s(wall_s, observed_tokens),
+        "budget_tokens": budget_tokens,
+        "budget_tok_per_s": _tok_s(wall_s, budget_tokens),
+        "p50_latency_s": p50,
+        "p95_latency_s": p95,
+        "state": "warm",
+    }
 
 
 def _vllm_completion(url: str, model: str, prompt: str, max_tokens: int) -> dict:
@@ -468,7 +524,10 @@ def run_concurrent(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dic
     print(f"  unique prompts warmed: {warmed_prompts}", flush=True)
     print(f"  workload={args.workload} prompt_chars={_prompt_summary(prompts)}", flush=True)
 
-    print(f"{'system':<6} {'C':>4} {'N':>4} {'wall_s':>8} {'tokens':>8} {'tok/s':>9} {'p50_lat':>8} {'p95_lat':>8}")
+    print(
+        f"{'system':<6} {'C':>4} {'N':>4} {'wall_s':>8} {'obs_tok':>8} "
+        f"{'obs_tok/s':>10} {'budget_tok/s':>12} {'p50_lat':>8} {'p95_lat':>8}"
+    )
     rows: list[dict] = []
     for concurrency in args.concurrency:
         def vllm_fn(prompt: str):
@@ -484,25 +543,13 @@ def run_concurrent(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dic
                 for response in pool.map(fn, prompts):
                     results.append(response)
             wall_s = time.perf_counter() - t0
-            tokens = sum(response["n_tokens"] for response in results)
-            latencies = sorted(response["total_s"] for response in results)
-            p50 = statistics.median(latencies)
-            p95 = latencies[int(0.95 * len(latencies)) - 1] if latencies else 0.0
-            row = {
-                "system": label,
-                "concurrency": concurrency,
-                "num_requests": len(results),
-                "wall_s": wall_s,
-                "tokens": tokens,
-                "tok_per_s": _tok_s(wall_s, tokens),
-                "p50_latency_s": p50,
-                "p95_latency_s": p95,
-                "state": "warm",
-            }
+            row = _concurrent_row(label, concurrency, results, wall_s, args.max_new_tokens)
             rows.append(row)
             print(
-                f"{label:<6} {concurrency:>4} {len(results):>4} {wall_s:>8.2f} {tokens:>8} "
-                f"{row['tok_per_s']:>9.1f} {p50:>8.2f} {p95:>8.2f}",
+                f"{label:<6} {concurrency:>4} {len(results):>4} {wall_s:>8.2f} "
+                f"{row['observed_tokens']:>8} {row['observed_tok_per_s']:>10.1f} "
+                f"{row['budget_tok_per_s']:>12.1f} {row['p50_latency_s']:>8.2f} "
+                f"{row['p95_latency_s']:>8.2f}",
                 flush=True,
             )
     return 0, {
@@ -626,6 +673,10 @@ def main() -> int:
                         help="Optional path to write structured benchmark results as JSON.")
     parser.add_argument("--label", default=None, help="Optional label stored in the JSON metadata.")
     parser.add_argument("--warmups", type=int, default=1, help="Number of warmup requests to run before timed modes.")
+    parser.add_argument("--jllm-gpu", type=int, default=None, help="Optional GPU id for the jllm lane metadata.")
+    parser.add_argument("--vllm-gpu", type=int, default=None, help="Optional GPU id for the vLLM lane metadata.")
+    parser.add_argument("--jllm-lane-type", choices=["stable", "experimental"], default="stable")
+    parser.add_argument("--vllm-lane-type", choices=["stable", "experimental"], default="stable")
     args = parser.parse_args()
 
     if args.jllm_url is not None:
@@ -651,6 +702,21 @@ def main() -> int:
     finally:
         stop_fn()
 
+    vllm_health = _safe_health(args.vllm_url)
+    jllm_info = jllm.info()
+    if args.jllm_url is not None:
+        jllm_info.update(
+            _lane_metadata(
+                args.jllm_url,
+                args.jllm_model_name,
+                jllm_info.get("server_health", {}),
+                args.jllm_lane_type,
+                args.jllm_gpu,
+            )
+        )
+    else:
+        jllm_info.update({"gpu": args.jllm_gpu, "lane_type": "inproc"})
+
     payload = {
         "metadata": {
             "label": args.label,
@@ -659,15 +725,22 @@ def main() -> int:
             "workload": args.workload,
             "warmups": args.warmups,
             "started_at_unix_s": time.time(),
-            "jllm": jllm.info(),
+            "runner": _runner_metadata(),
+            "token_metrics": {
+                "observed": "returned completion_tokens",
+                "budgeted": "num_requests * max_new_tokens",
+            },
+            "jllm": jllm_info,
             "jllm_stats_before": stats_before,
             "jllm_stats_after": stats_after,
             "jllm_stats_delta": _stats_delta(stats_before, stats_after),
-            "vllm": {
-                "url": args.vllm_url,
-                "model": args.vllm_model_name,
-                "health": _safe_health(args.vllm_url),
-            },
+            "vllm": _lane_metadata(
+                args.vllm_url,
+                args.vllm_model_name,
+                vllm_health,
+                args.vllm_lane_type,
+                args.vllm_gpu,
+            ),
         },
         "result": result,
     }

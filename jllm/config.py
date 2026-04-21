@@ -4,7 +4,7 @@ Call `apply_jax_env(JllmConfig.from_env())` at program start, BEFORE any jax
 imports, so `JAX_COMPILATION_CACHE_DIR` and friends take effect.
 
 Env vars:
-    JLLM_ATTENTION_IMPL          einsum (default) | sdpa | aiter
+    JLLM_ATTENTION_IMPL          einsum (default) | sdpa
     JLLM_MODEL_PATH              mirrors --model-path (for Docker deployment)
     JAX_COMPILATION_CACHE_DIR    persistent JIT artifact cache (45-60s → 2-5s
                                  on warm server restart)
@@ -22,7 +22,7 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-VALID_ATTENTION_IMPLS = ("einsum", "sdpa", "aiter")
+VALID_ATTENTION_IMPLS = ("einsum", "sdpa")
 
 
 @dataclass(frozen=True)

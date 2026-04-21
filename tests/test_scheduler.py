@@ -21,9 +21,27 @@ def test_prefill_uses_active_batch(monkeypatch):
     seen: list[int] = []
     real_prefill = eng.prefill
 
-    def recording_prefill(model, state, chunk_ids, pos_starts, block_tables, phys_blocks):
+    def recording_prefill(
+        model,
+        state,
+        chunk_ids,
+        pos_starts,
+        block_tables,
+        valid_tokens,
+        last_token_idx,
+        phys_blocks,
+    ):
         seen.append(int(chunk_ids.shape[0]))
-        return real_prefill(model, state, chunk_ids, pos_starts, block_tables, phys_blocks)
+        return real_prefill(
+            model,
+            state,
+            chunk_ids,
+            pos_starts,
+            block_tables,
+            valid_tokens,
+            last_token_idx,
+            phys_blocks,
+        )
 
     monkeypatch.setattr(eng, "prefill", recording_prefill)
     eng.add_request(driver, [1, 2, 3, 4], SamplingParams(max_new_tokens=2))
@@ -76,9 +94,9 @@ def test_decode_uses_active_batch(monkeypatch):
     seen: list[int] = []
     real_decode = eng.decode
 
-    def recording_decode(model, state, last_tokens, positions, block_tables, phys_block, slot_in_block):
+    def recording_decode(model, state, last_tokens, positions, valid_rows, block_tables, phys_block, slot_in_block):
         seen.append(int(last_tokens.shape[0]))
-        return real_decode(model, state, last_tokens, positions, block_tables, phys_block, slot_in_block)
+        return real_decode(model, state, last_tokens, positions, valid_rows, block_tables, phys_block, slot_in_block)
 
     monkeypatch.setattr(eng, "decode", recording_decode)
     eng.add_request(driver, [1, 2, 3, 4], SamplingParams(max_new_tokens=2))
@@ -140,13 +158,31 @@ def test_scheduler_prefills_before_decode_when_both_are_ready(monkeypatch):
     real_decode = eng.decode
     real_prefill = eng.prefill
 
-    def recording_decode(model, state, last_tokens, positions, block_tables, phys_block, slot_in_block):
+    def recording_decode(model, state, last_tokens, positions, valid_rows, block_tables, phys_block, slot_in_block):
         order.append("decode")
-        return real_decode(model, state, last_tokens, positions, block_tables, phys_block, slot_in_block)
+        return real_decode(model, state, last_tokens, positions, valid_rows, block_tables, phys_block, slot_in_block)
 
-    def recording_prefill(model, state, chunk_ids, pos_starts, block_tables, phys_blocks):
+    def recording_prefill(
+        model,
+        state,
+        chunk_ids,
+        pos_starts,
+        block_tables,
+        valid_tokens,
+        last_token_idx,
+        phys_blocks,
+    ):
         order.append("prefill")
-        return real_prefill(model, state, chunk_ids, pos_starts, block_tables, phys_blocks)
+        return real_prefill(
+            model,
+            state,
+            chunk_ids,
+            pos_starts,
+            block_tables,
+            valid_tokens,
+            last_token_idx,
+            phys_blocks,
+        )
 
     monkeypatch.setattr(eng, "decode", recording_decode)
     monkeypatch.setattr(eng, "prefill", recording_prefill)
@@ -161,3 +197,108 @@ def test_scheduler_prefills_before_decode_when_both_are_ready(monkeypatch):
     assert order[:2] == ["prefill", "decode"]
     assert driver.stats.cache_hit_blocks - cache_hits_before == 1
     assert driver.stats.extend_calls - extend_calls_before == 1
+
+
+def test_prefill_uses_live_context_bucket(monkeypatch):
+    model = make_tiny_model()
+    driver = eng.make_driver(
+        model,
+        max_num_seqs=2,
+        max_model_len=64,
+        max_prefill_len=8,
+        block_size=4,
+        dtype=jnp.float32,
+    )
+
+    seen: list[int] = []
+    real_prefill = eng.prefill
+
+    def recording_prefill(
+        model,
+        state,
+        chunk_ids,
+        pos_starts,
+        block_tables,
+        valid_tokens,
+        last_token_idx,
+        phys_blocks,
+    ):
+        seen.append(int(block_tables.shape[1]))
+        return real_prefill(
+            model,
+            state,
+            chunk_ids,
+            pos_starts,
+            block_tables,
+            valid_tokens,
+            last_token_idx,
+            phys_blocks,
+        )
+
+    monkeypatch.setattr(eng, "prefill", recording_prefill)
+    eng.add_request(driver, [1, 2, 3, 4], SamplingParams(max_new_tokens=1))
+
+    eng.step(driver)
+
+    assert seen == [1]
+
+
+def test_decode_uses_live_context_bucket(monkeypatch):
+    model = make_tiny_model()
+    driver = eng.make_driver(
+        model,
+        max_num_seqs=2,
+        max_model_len=64,
+        max_prefill_len=8,
+        block_size=4,
+        dtype=jnp.float32,
+    )
+
+    seen: list[int] = []
+    real_decode = eng.decode
+
+    def recording_decode(model, state, last_tokens, positions, valid_rows, block_tables, phys_block, slot_in_block):
+        seen.append(int(block_tables.shape[1]))
+        return real_decode(model, state, last_tokens, positions, valid_rows, block_tables, phys_block, slot_in_block)
+
+    monkeypatch.setattr(eng, "decode", recording_decode)
+    eng.add_request(driver, [1, 2, 3, 4], SamplingParams(max_new_tokens=2))
+
+    eng.step(driver)
+    eng.step(driver)
+
+    assert seen == [2]
+
+
+def test_stream_raises_after_driver_failure():
+    model = make_tiny_model()
+    driver = eng.make_driver(
+        model,
+        max_num_seqs=1,
+        max_model_len=16,
+        max_prefill_len=8,
+        block_size=4,
+        dtype=jnp.float32,
+    )
+
+    request_id = eng.add_request(driver, [1, 2, 3, 4], SamplingParams(max_new_tokens=1))
+    driver.thread_error = "RuntimeError: boom"
+
+    with pytest.raises(RuntimeError, match="engine thread failed"):
+        next(eng.stream(driver, request_id))
+
+
+def test_add_request_raises_after_driver_failure():
+    model = make_tiny_model()
+    driver = eng.make_driver(
+        model,
+        max_num_seqs=1,
+        max_model_len=16,
+        max_prefill_len=8,
+        block_size=4,
+        dtype=jnp.float32,
+    )
+    driver.thread_error = "RuntimeError: boom"
+
+    with pytest.raises(RuntimeError, match="engine thread failed"):
+        eng.add_request(driver, [1, 2, 3, 4], SamplingParams(max_new_tokens=1))

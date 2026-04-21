@@ -1,52 +1,27 @@
 # jax-vllm (`jllm`)
 
-A compact JAX implementation of the core serving ideas behind vLLM: continuous
-batching, paged KV caching, chunked prefill, and content-addressed prefix
-caching. The project is intentionally small, but it is structured as a serious
-serving engine rather than a notebook prototype: the hot path is explicit, the
-state boundaries are narrow, and the benchmark loop is built into the repo.
+`jllm` is a compact JAX serving engine built around the core ideas behind
+vLLM: continuous batching, paged KV caching, chunked prefill, and content-
+addressed prefix reuse. The codebase is intentionally small, explicit, and easy
+to benchmark.
 
-`jllm` currently targets decoder-only transformer families with the shared
-interface defined in [`jllm/model/common.py`](jllm/model/common.py). The engine
-does not depend on Qwen-specific classes; it depends only on the minimal model
-surface required for embedding, rotary attention, decoder layers, and LM head
-projection.
+The project currently targets decoder-only transformer families through the
+shared interface in `jllm/model/common.py`. The engine depends on a narrow
+model surface rather than Qwen-specific serving code.
 
-## Design Overview
+## Design
 
-The implementation follows five design decisions.
+The implementation is organized around three boundaries:
 
-| Choice | Rationale |
-|---|---|
-| **Paged KV cache** | Keeps allocation stable and allows prompt sharing through physical block reuse. |
-| **Content-hash prefix caching** | Reuses full prompt blocks by content, not by request identity. |
-| **Chunked prefill** | Makes prefill shape-stable and amortizes compilation across arbitrary prompt lengths. |
-| **Packed active batching** | Decode and prefill run on the active slot set rather than always paying for `max_num_seqs`. |
-| **Functional runtime state** | Host-side runtime arrays are copy-on-write, which keeps scheduler reasoning simple and testable. |
+1. `jllm/model/`: shared decoder-only primitives plus model-family wiring
+2. `jllm/engine/`: request admission, scheduling, runtime metadata, and cache policy
+3. `jllm/engine/generate.py` + `jllm/engine/paged.py`: JAX kernels and paged KV layout
 
-The engine remains deliberately conservative in scope: no custom kernels, no
-speculative decoding, and no architecture-specific scheduling branches in the
-engine layer. Performance work is therefore concentrated on scheduling,
-batch-shaping, cache reuse, and JAX/XLA behavior.
+The serving path keeps host-side scheduler state separate from device-side KV
+state:
 
-## Architecture
-
-The codebase is split along three boundaries.
-
-1. **Model interface**. `jllm/model/common.py` defines the shared decoder-only
-   primitives and the abstract surface the engine consumes.
-2. **Engine runtime**. `jllm/engine/engine.py`, `runtime.py`, and `cache.py`
-   own request admission, scheduling, prefix-cache bookkeeping, and streaming.
-3. **JAX kernels**. `jllm/engine/generate.py` and `paged.py` own the paged
-   cache layout plus the batched prefill/decode kernels.
-
-The resulting separation is intentional:
-
-- The engine knows about slots, block tables, and cache policy.
-- The model layer knows about attention, RoPE, layer structure, and weight
-  layout.
-- The kernel layer knows how to combine a generic decoder model with paged KV
-  storage.
+- Host runtime state owns slots, positions, block tables, and prefix-cache bookkeeping.
+- Device state owns the paged KV tensors and the prefill/decode kernels.
 
 ## Installation
 
@@ -56,9 +31,8 @@ uv sync --extra dev --extra rocm
 uv sync --extra dev --extra parity
 ```
 
-The `parity` extra installs the Hugging Face / PyTorch dependency set used by
-the parity tests. It is useful on CPU machines or in a dedicated environment;
-on ROCm hosts you may prefer to keep it separate from the serving environment.
+The `parity` extra installs the Hugging Face / PyTorch stack used by the parity
+tests. It is usually best kept separate from the normal serving environment.
 
 ## Running the Server
 
@@ -74,35 +48,59 @@ The server exposes:
 - `POST /v1/chat/completions`
 - `GET /health`
 
-`/health` also reports the configured attention backend and engine counters,
-which is useful when comparing runs.
+`/health` reports the configured attention backend, runtime limits, engine
+counters, and any background engine-thread failure.
 
-## Environment Variables
+## Configuration
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `JLLM_ATTENTION_IMPL` | `einsum` | Attention backend: `einsum` or `sdpa`. |
-| `JLLM_MODEL_PATH` | unset | Default model path for `jllm-serve`. |
-| `JAX_COMPILATION_CACHE_DIR` | unset | Persist XLA compilations across restarts. |
-| `JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS` | `0` | Cache even short compiles so repeated experiment lanes warm quickly. |
-| `JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES` | `0` | Persist small compiled artifacts instead of only larger entries. |
-| `XLA_PYTHON_CLIENT_PREALLOCATE` | `false` | Prevent eager full-device reservation. |
-| `XLA_PYTHON_CLIENT_MEM_FRACTION` | `0.90` | Default memory ceiling for XLA allocation. |
+| `JLLM_ATTENTION_IMPL` | `einsum` | Attention backend: `einsum` or `sdpa` |
+| `JLLM_MODEL_PATH` | unset | Default model path for `jllm-serve` |
+| `JAX_COMPILATION_CACHE_DIR` | unset | Persist XLA compilations across restarts |
+| `JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS` | `0` | Cache even short compiles |
+| `JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES` | `0` | Persist small compiled artifacts |
+| `XLA_PYTHON_CLIENT_PREALLOCATE` | `false` | Prevent eager full-device reservation |
+| `XLA_PYTHON_CLIENT_MEM_FRACTION` | `0.90` | Default memory ceiling for XLA allocation |
+
+## Testing
+
+The default test command is the fast gate. It excludes weight-backed engine
+tests and HF parity tests.
+
+```sh
+UV_CACHE_DIR=.uv-cache uv run pytest
+```
+
+Engine tests run separately:
+
+```sh
+UV_CACHE_DIR=.uv-cache uv run pytest -m engine tests/test_engine.py tests/test_threaded_engine.py --durations=10
+```
+
+Parity tests run separately:
+
+```sh
+UV_CACHE_DIR=.uv-cache uv run pytest -m parity tests/test_parity.py tests/test_long_rollout.py --durations=10
+```
+
+The split is intentional: the heavyweight tests load large JAX and Hugging Face
+models, and keeping them out of the default loop makes local development and CI
+much more predictable.
 
 ## Benchmarking
 
-`scripts/bench_vllm.py` compares `jllm` and vLLM using the same prompt sets.
+`scripts/bench_vllm.py` compares `jllm` and vLLM with the same prompt sets.
 It supports both a running HTTP server and an in-process `jllm` engine.
 
 ```sh
 uv run python scripts/bench_vllm.py --mode sequential
-uv run python scripts/bench_vllm.py --mode concurrent --concurrency 1 4 16
 uv run python scripts/bench_vllm.py --mode concurrent --workload mixed --concurrency 1 2 4
 uv run python scripts/bench_vllm.py --mode chat
 uv run python scripts/bench_vllm.py --mode prefix_cache --prefix-len 256
 ```
 
-Structured output can be written with:
+Structured output:
 
 ```sh
 uv run python scripts/bench_vllm.py \
@@ -113,27 +111,24 @@ uv run python scripts/bench_vllm.py \
   --label mi300x-nightly
 ```
 
-The JSON payload includes:
+Concurrent runs report both:
 
-- git SHA
-- benchmark label
-- workload profile and prompt-length summary
-- attention backend
-- server metadata when available
-- engine stats deltas for the timed run
-- throughput / latency summaries
-- cold vs warm prefix-cache measurements where relevant
+- observed completion throughput: based on returned completion tokens
+- budget-normalized throughput: based on `num_requests * max_new_tokens`
+
+The JSON payload also records runner metadata plus lane provenance such as host,
+port, model, backend, and optional GPU/lane-type labels.
 
 ## Remote ROCm Workflow
 
-The intended remote workflow is deliberately simple:
+The remote workflow stays intentionally simple:
 
 1. Sync the repo to the GPU host.
 2. SSH into the host.
-3. Launch one or more isolated GPU lanes for `jllm` and vLLM.
-4. Run benchmark commands against the lane ports you care about.
+3. Launch isolated `jllm` and vLLM lanes.
+4. Benchmark only healthy stable lanes.
 
-The sync step is parameterized through environment variables rather than
+`scripts/sync.sh` is parameterized with environment variables rather than
 hard-coded paths.
 
 | Variable | Default | Purpose |
@@ -154,9 +149,7 @@ JLLM_GPU=0 JLLM_PORT=8080 bash scripts/run_jllm_lane.sh
 VLLM_GPU=1 VLLM_PORT=8020 bash scripts/run_vllm_lane.sh
 ```
 
-Each lane chooses its own persistent JAX cache directory and log file, so warm
-restarts and parallel experiments do not trample one another. The lane helpers
-default to:
+Each `jllm` lane gets its own persistent JAX compilation cache directory:
 
 - `JAX_COMPILATION_CACHE_DIR=/tmp/jllm-jax-cache/gpu<gpu>-port<port>`
 - `JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0`
@@ -168,92 +161,15 @@ From another shell on the remote host:
 cd /root/jax-vllm
 UV_CACHE_DIR=.uv-cache uv run python scripts/bench_vllm.py \
   --jllm-url http://127.0.0.1:8080 \
+  --jllm-model-name Qwen2.5-32B-Instruct \
+  --jllm-gpu 0 \
+  --jllm-lane-type stable \
   --vllm-url http://127.0.0.1:8020 \
+  --vllm-model-name qwen32b \
+  --vllm-gpu 1 \
+  --vllm-lane-type stable \
   --mode concurrent \
   --workload mixed \
   --concurrency 1 2 4 \
   --json-out results/concurrent.json
 ```
-
-To add a second lane in parallel:
-
-```sh
-cd /root/jax-vllm
-JLLM_GPU=2 JLLM_PORT=8182 bash scripts/run_jllm_lane.sh
-VLLM_GPU=3 VLLM_PORT=9020 VLLM_MODEL_NAME=qwen32b-lane2 bash scripts/run_vllm_lane.sh
-```
-
-For inspection without side effects:
-
-```sh
-JLLM_DRY_RUN=1 bash scripts/sync.sh
-JLLM_DRY_RUN=1 JLLM_GPU=2 JLLM_PORT=8182 bash scripts/run_jllm_lane.sh
-VLLM_DRY_RUN=1 VLLM_GPU=3 VLLM_PORT=9020 bash scripts/run_vllm_lane.sh
-```
-
-The local machine in this development environment resolves `gpu-droplet` via
-SSH configuration and can connect to it successfully, so the documented loop is
-grounded in an actual reachable host rather than a placeholder alias.
-
-## Testing
-
-Fast local checks:
-
-```sh
-UV_CACHE_DIR=.uv-cache uv run pytest tests/test_paged.py tests/test_scheduler.py
-```
-
-Full suite:
-
-```sh
-UV_CACHE_DIR=.uv-cache uv run pytest tests/
-```
-
-Weight-dependent tests skip automatically when the referenced checkpoint is not
-present on disk. This keeps local development tight while still allowing full
-parity validation on the remote model host.
-
-The test suite currently covers:
-
-- paged cache primitives and LRU behavior
-- packed prefill/decode scheduling
-- prefill-before-decode scheduling with mixed cached and uncached requests
-- threaded request handling
-- Hugging Face parity when model weights are available
-- benchmark JSON, workload selection, and remote helper script smoke tests
-
-## Repository Layout
-
-```text
-jllm/
-  config.py
-  server.py
-  engine/
-    engine.py
-    runtime.py
-    cache.py
-    state.py
-    generate.py
-    paged.py
-    request.py
-  model/
-    common.py
-    qwen2.py
-    qwen3.py
-    weights.py
-scripts/
-  sync.sh
-  bench_vllm.py
-tests/
-```
-
-## Scope and Limitations
-
-`jllm` is intended as a clean serving engine that is easy to study, extend, and
-benchmark. It is not yet a kernel-level competitor to production vLLM builds.
-The remaining performance gap is expected to come primarily from fused kernels,
-flash attention variants, and graph-capture techniques that are intentionally
-out of scope for this repository.
-
-Within that scope, the project is meant to be explicit, extensible, and
-measurable.

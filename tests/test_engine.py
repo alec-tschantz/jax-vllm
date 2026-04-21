@@ -1,14 +1,10 @@
-import os
-
 import jax.numpy as jnp
 import pytest
 
 from jllm.engine import engine
 from jllm.engine.request import SamplingParams
-from jllm.model.weights import load_from_path
-from ._weights import require_model_path
 
-MODEL_PATH = os.environ.get("PARITY_MODEL", "weights/Qwen2.5-0.5B-Instruct")
+pytestmark = pytest.mark.engine
 
 PROMPTS = [
     [785, 6722, 315, 9625, 374],              # "The capital of France is"
@@ -31,27 +27,22 @@ def _run_engine_fp32(model, prompts, max_num_seqs, max_model_len, max_new):
     return [out[rid] for rid in rids]
 
 
-@pytest.fixture(scope="module")
-def model_fp32():
-    return load_from_path(require_model_path(MODEL_PATH), dtype=jnp.float32)
-
-
-def test_engine_is_deterministic(model_fp32):
+def test_engine_is_deterministic(jx_model_fp32):
     """Running the engine twice with the same requests should produce identical tokens."""
-    first = _run_engine_fp32(model_fp32, PROMPTS, max_num_seqs=2, max_model_len=32, max_new=MAX_NEW)
-    second = _run_engine_fp32(model_fp32, PROMPTS, max_num_seqs=2, max_model_len=32, max_new=MAX_NEW)
+    first = _run_engine_fp32(jx_model_fp32, PROMPTS, max_num_seqs=2, max_model_len=32, max_new=MAX_NEW)
+    second = _run_engine_fp32(jx_model_fp32, PROMPTS, max_num_seqs=2, max_model_len=32, max_new=MAX_NEW)
     assert first == second
 
 
-def test_slot_output_independent_of_batchmate(model_fp32):
+def test_slot_output_independent_of_batchmate(jx_model_fp32):
     """Request A's output must be independent of what else is in the batch.
     Runs request 0 alongside request 1, then runs request 0 alongside request 2.
     The tokens emitted for request 0 must be identical in both runs."""
     with_peer_1 = _run_engine_fp32(
-        model_fp32, [PROMPTS[0], PROMPTS[1]], max_num_seqs=2, max_model_len=32, max_new=MAX_NEW
+        jx_model_fp32, [PROMPTS[0], PROMPTS[1]], max_num_seqs=2, max_model_len=32, max_new=MAX_NEW
     )
     with_peer_2 = _run_engine_fp32(
-        model_fp32, [PROMPTS[0], PROMPTS[2]], max_num_seqs=2, max_model_len=32, max_new=MAX_NEW
+        jx_model_fp32, [PROMPTS[0], PROMPTS[2]], max_num_seqs=2, max_model_len=32, max_new=MAX_NEW
     )
     assert with_peer_1[0] == with_peer_2[0], (
         f"request 0 output changed with different batchmate\n"
@@ -60,19 +51,19 @@ def test_slot_output_independent_of_batchmate(model_fp32):
     )
 
 
-def test_engine_matches_solo_fp32(model_fp32):
+def test_engine_matches_solo_fp32(jx_model_fp32):
     """Engine output for each request should match that same request run in a 1-slot engine (solo)."""
     cb_outputs = _run_engine_fp32(
-        model_fp32, PROMPTS, max_num_seqs=2, max_model_len=32, max_new=MAX_NEW
+        jx_model_fp32, PROMPTS, max_num_seqs=2, max_model_len=32, max_new=MAX_NEW
     )
     for i, p in enumerate(PROMPTS):
-        solo = _run_engine_fp32(model_fp32, [p], max_num_seqs=1, max_model_len=32, max_new=MAX_NEW)[0]
+        solo = _run_engine_fp32(jx_model_fp32, [p], max_num_seqs=1, max_model_len=32, max_new=MAX_NEW)[0]
         assert cb_outputs[i] == solo, (
             f"request {i} diverges: cb={cb_outputs[i]} solo={solo}"
         )
 
 
-def test_prefix_caching_skips_extend_on_second_request(model_fp32):
+def test_prefix_caching_skips_extend_on_second_request(jx_model_fp32):
     """Send the same prompt twice on one driver; the second admit should find
     the prompt's full blocks in the cache and skip all extend_step calls (or
     all but the partial-last-block call). Output tokens must match."""
@@ -84,7 +75,7 @@ def test_prefix_caching_skips_extend_on_second_request(model_fp32):
     prompt_32 = (PROMPTS[0] * 10)[:32]  # pad/truncate to exactly 32 tokens
 
     driver = engine.make_driver(
-        model_fp32, max_num_seqs=1, max_model_len=48, max_prefill_len=32,
+        jx_model_fp32, max_num_seqs=1, max_model_len=48, max_prefill_len=32,
         block_size=block_size, dtype=jnp.float32,
     )
 
@@ -115,7 +106,7 @@ def test_prefix_caching_skips_extend_on_second_request(model_fp32):
     )
 
 
-def test_chunked_prefill_runs_one_chunk_per_block(model_fp32):
+def test_chunked_prefill_runs_one_chunk_per_block(jx_model_fp32):
     """A cold prompt of length T runs exactly ceil(T / block_size) extend_step
     calls. Regression guard: if someone fuses prefill back into one big kernel
     or chunks at the wrong granularity, this fails."""
@@ -127,7 +118,7 @@ def test_chunked_prefill_runs_one_chunk_per_block(model_fp32):
     expected_chunks = (len(prompt) + block_size - 1) // block_size  # 1
 
     driver = engine.make_driver(
-        model_fp32, max_num_seqs=1, max_model_len=32, max_prefill_len=16,
+        jx_model_fp32, max_num_seqs=1, max_model_len=32, max_prefill_len=16,
         block_size=block_size, dtype=jnp.float32,
     )
     driver.stats.extend_calls = 0
@@ -143,7 +134,7 @@ def test_chunked_prefill_runs_one_chunk_per_block(model_fp32):
     # Now a longer prompt that needs multiple chunks.
     prompt_long = (prompt * 3)[:32]  # exactly 2 full blocks
     driver2 = engine.make_driver(
-        model_fp32, max_num_seqs=1, max_model_len=48, max_prefill_len=32,
+        jx_model_fp32, max_num_seqs=1, max_model_len=48, max_prefill_len=32,
         block_size=block_size, dtype=jnp.float32,
     )
     driver2.stats.extend_calls = 0
@@ -157,7 +148,7 @@ def test_chunked_prefill_runs_one_chunk_per_block(model_fp32):
     )
 
 
-def test_partial_prefix_cache_hit_skips_only_cached_blocks(model_fp32):
+def test_partial_prefix_cache_hit_skips_only_cached_blocks(jx_model_fp32):
     """Prompt B has the first block of prompt A as prefix, plus new tokens.
     B's admit should hit 1 cached block and extend_step only the suffix
     (1 chunk for the 2nd block). Outputs on identical suffix must match solo."""
@@ -171,7 +162,7 @@ def test_partial_prefix_cache_hit_skips_only_cached_blocks(model_fp32):
     prompt_b = prompt_a[:16] + (PROMPTS[1] * 10)[:16]
 
     driver = engine.make_driver(
-        model_fp32, max_num_seqs=1, max_model_len=48, max_prefill_len=32,
+        jx_model_fp32, max_num_seqs=1, max_model_len=48, max_prefill_len=32,
         block_size=block_size, dtype=jnp.float32,
     )
 

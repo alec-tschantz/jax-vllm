@@ -1,18 +1,11 @@
 """End-to-end parity: greedy-generate N tokens with HF vs JX in fp32 must match exactly."""
 
-import os
-
-import jax.numpy as jnp
 import pytest
-torch = pytest.importorskip("torch")
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-from jllm.model.weights import load_from_path
 
 from ._greedy import greedy
-from ._weights import require_model_path
 
-MODEL_PATH = os.environ.get("PARITY_MODEL", "weights/Qwen2.5-0.5B-Instruct")
+pytestmark = pytest.mark.parity
+
 N_NEW = 40
 
 PROMPTS = [
@@ -21,27 +14,12 @@ PROMPTS = [
     "Once upon a time",
 ]
 
-
-@pytest.fixture(scope="module")
-def tokenizer():
-    return AutoTokenizer.from_pretrained(require_model_path(MODEL_PATH))
-
-
-@pytest.fixture(scope="module")
-def hf_model():
-    return AutoModelForCausalLM.from_pretrained(require_model_path(MODEL_PATH), dtype=torch.float32).eval()
-
-
-@pytest.fixture(scope="module")
-def jx_model():
-    return load_from_path(require_model_path(MODEL_PATH), dtype=jnp.float32)
-
-
 @pytest.mark.parametrize("prompt", PROMPTS)
-def test_greedy_matches_hf_exactly(prompt, tokenizer, hf_model, jx_model):
+def test_greedy_matches_hf_exactly(prompt, tokenizer, hf_model_fp32, jx_model_fp32):
+    torch = pytest.importorskip("torch")
     ids = tokenizer(prompt, return_tensors="pt").input_ids
     with torch.no_grad():
-        hf_out = hf_model.generate(
+        hf_out = hf_model_fp32.generate(
             ids,
             max_new_tokens=N_NEW,
             do_sample=False,
@@ -51,7 +29,7 @@ def test_greedy_matches_hf_exactly(prompt, tokenizer, hf_model, jx_model):
         )[0].tolist()
 
     prompt_ids = ids[0].tolist()
-    new_ids = greedy(jx_model, prompt_ids, max_new_tokens=N_NEW)
+    new_ids = greedy(jx_model_fp32, prompt_ids, max_new_tokens=N_NEW)
     jx_out = prompt_ids + new_ids
 
     assert hf_out == jx_out, f"first diff: {_first_diff(hf_out, jx_out)}"

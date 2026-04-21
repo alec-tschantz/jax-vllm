@@ -67,7 +67,7 @@ class CompletionRequest(BaseModel):
 def health():
     d = STATE["driver"]
     return {
-        "status": "ok",
+        "status": "error" if d.thread_error is not None else "ok",
         "model": STATE["model_path"],
         "attention_impl": _INITIAL_CFG.attention_impl,
         "active_slots": len(d.running),
@@ -75,6 +75,7 @@ def health():
         "max_num_seqs": d.max_num_seqs,
         "max_model_len": d.max_model_len,
         "max_prefill_len": d.max_prefill_len,
+        "thread_error": d.thread_error,
         "stats": asdict(d.stats),
     }
 
