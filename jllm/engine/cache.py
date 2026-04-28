@@ -18,7 +18,6 @@ class CachedPrefix:
 
 
 def prompt_block_hashes(prompt_ids: list[int], block_size: int) -> list[BlockHash]:
-    """Return full-block prompt hashes; trailing partial blocks are skipped."""
     nb_full = len(prompt_ids) // block_size
     hashes: list[BlockHash] = []
     parent: BlockHash = b""

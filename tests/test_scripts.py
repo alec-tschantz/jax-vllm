@@ -226,6 +226,7 @@ def test_remote_jllm_script_dry_run():
     assert "--port 8182" in out
     assert "/tmp/jllm-8182.log" in out
 
+
 def test_remote_vllm_script_dry_run():
     out = _run_script(
         "run_vllm_lane.sh",

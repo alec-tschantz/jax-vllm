@@ -1,10 +1,3 @@
-"""Safetensors → pytree loader for Qwen2 / Qwen3 models.
-
-`load_from_path(path, dtype)` inspects the HF config's `architectures` field and
-dispatches to `load_qwen2` or `load_qwen3`. Both arch loaders share the same
-`_load_tensors` + `_linear` + `_rms` helpers; only the bias policy (Qwen2 has
-biases on Q/K/V, Qwen3 doesn't) and the presence of qk_norm differ.
-"""
 import json
 from pathlib import Path
 from typing import Callable, Union
@@ -78,7 +71,7 @@ def load_qwen2(path: "str | Path", dtype=jnp.bfloat16) -> Qwen2Model:
                     k_proj=_linear(arr, f"{p}.self_attn.k_proj", bias=True),
                     v_proj=_linear(arr, f"{p}.self_attn.v_proj", bias=True),
                     o_proj=_linear(arr, f"{p}.self_attn.o_proj", bias=False),
-                    q_norm=None,     # Qwen2 has no qk_norm
+                    q_norm=None,
                     k_norm=None,
                     num_heads=cfg.num_heads,
                     num_kv_heads=cfg.num_kv_heads,
@@ -153,8 +146,6 @@ Model = Union[Qwen2Model, Qwen3Model]
 
 
 def load_from_path(path: "str | Path", dtype=jnp.bfloat16) -> Model:
-    """Inspect HF `architectures[0]` and dispatch. Supports Qwen2ForCausalLM
-    and Qwen3ForCausalLM. Other decoder-only families can be added here."""
     arch = _read_arch(Path(path))
     if arch == "Qwen2ForCausalLM":
         return load_qwen2(path, dtype=dtype)

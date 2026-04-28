@@ -1,9 +1,3 @@
-"""Qwen3 / Qwen3.5 wiring.
-
-Uses the shared `Attention` / `DecoderLayer` types from common.py. Qwen3
-populates `q_norm` and `k_norm` (Qwen2 leaves them None) and has bias-free
-Q/K/V projections. Weight loading lives in `weights.py::load_qwen3`.
-"""
 import json
 from dataclasses import dataclass
 from pathlib import Path

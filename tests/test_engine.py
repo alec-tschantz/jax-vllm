@@ -67,9 +67,6 @@ def test_prefix_caching_skips_extend_on_second_request(jx_model_fp32):
     """Send the same prompt twice on one driver; the second admit should find
     the prompt's full blocks in the cache and skip all extend_step calls (or
     all but the partial-last-block call). Output tokens must match."""
-    from jllm.engine import engine
-    from jllm.engine.request import SamplingParams
-
     # Use a prompt that's exactly 2 full blocks (32 tokens) so it's fully-cacheable.
     block_size = 16
     prompt_32 = (PROMPTS[0] * 10)[:32]  # pad/truncate to exactly 32 tokens
@@ -110,9 +107,6 @@ def test_chunked_prefill_runs_one_chunk_per_block(jx_model_fp32):
     """A cold prompt of length T runs exactly ceil(T / block_size) extend_step
     calls. Regression guard: if someone fuses prefill back into one big kernel
     or chunks at the wrong granularity, this fails."""
-    from jllm.engine import engine
-    from jllm.engine.request import SamplingParams
-
     block_size = 16
     prompt = [785, 6722, 315, 9625, 374, 750, 79683, 1445, 982, 9454, 8420, 11]  # 12 tokens
     expected_chunks = (len(prompt) + block_size - 1) // block_size  # 1
@@ -152,9 +146,6 @@ def test_partial_prefix_cache_hit_skips_only_cached_blocks(jx_model_fp32):
     """Prompt B has the first block of prompt A as prefix, plus new tokens.
     B's admit should hit 1 cached block and extend_step only the suffix
     (1 chunk for the 2nd block). Outputs on identical suffix must match solo."""
-    from jllm.engine import engine
-    from jllm.engine.request import SamplingParams
-
     block_size = 16
     # Prompt A: 2 full blocks (32 tokens).
     prompt_a = (PROMPTS[0] * 10)[:32]
