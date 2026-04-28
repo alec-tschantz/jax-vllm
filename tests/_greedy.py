@@ -1,8 +1,4 @@
-"""Synchronous greedy helper for tests.
-
-Drives the paged engine in a single thread: add request, step until done.
-Replaces the deleted `generate_greedy` reference implementation.
-"""
+"""Synchronous greedy helper for parity tests."""
 from typing import Optional
 
 import jax.numpy as jnp

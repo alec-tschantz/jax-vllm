@@ -1,8 +1,3 @@
-"""Threaded driver around the JAX KV-cache state.
-
-The host runtime owns slot lifecycle, scheduler policy, and prefix-cache
-bookkeeping. The JAX-facing state only carries the paged KV cache.
-"""
 import queue
 import threading
 import time
@@ -35,7 +30,6 @@ _STREAM_POLL = 0.1
 
 @dataclass
 class Driver:
-    """Mutable engine container for scheduler/runtime state."""
 
     model: DecoderOnlyModel
     max_num_seqs: int
@@ -160,8 +154,8 @@ def step(driver: Driver) -> list[StepEvent]:
     _raise_if_failed(driver)
     driver.stats.scheduler_loops += 1
     events = _admit(driver)
-    # Prefill before decode so newly-admitted short prompts can join the active
-    # decode batch promptly instead of being starved behind existing decoders.
+
+
     events.extend(_prefill_batch(driver))
     events.extend(_decode(driver))
     return events
@@ -177,14 +171,14 @@ def start(driver: Driver) -> None:
 
 
 def prewarm(driver: Driver) -> float:
-    # Trigger JIT compile for every (batch_bucket, context_bucket) shape the
-    # scheduler can hit. Without this, the first real request for each unseen
-    # shape pays the compile cost inside its own latency, which crushes p95 on
-    # long prompts and on the first concurrent burst. All scatter writes land
-    # in sentinel block 0 (safe — inactive rows normally target it) and any
-    # gather reads come back from the same block; numeric output is discarded.
-    # Each donated input is rebuilt per-kernel call because the JIT wrappers
-    # donate everything except `model`.
+
+
+
+
+
+
+
+
     bs = driver.block_size
     t0 = time.perf_counter()
     shapes = [(B, NB) for B in driver.batch_buckets for NB in driver.context_buckets]
@@ -192,22 +186,22 @@ def prewarm(driver: Driver) -> float:
         driver.state, _ = prefill(
             driver.model,
             driver.state,
-            jnp.zeros((B, bs), dtype=jnp.int32),      # chunk_ids
-            jnp.zeros((B,), dtype=jnp.int32),         # pos_starts
-            jnp.zeros((B, NB), dtype=jnp.int32),      # block_tables
-            jnp.zeros((B,), dtype=jnp.int32),         # valid_tokens
-            jnp.zeros((B,), dtype=jnp.int32),         # last_token_idx
-            jnp.zeros((B,), dtype=jnp.int32),         # phys_blocks
+            jnp.zeros((B, bs), dtype=jnp.int32),
+            jnp.zeros((B,), dtype=jnp.int32),
+            jnp.zeros((B, NB), dtype=jnp.int32),
+            jnp.zeros((B,), dtype=jnp.int32),
+            jnp.zeros((B,), dtype=jnp.int32),
+            jnp.zeros((B,), dtype=jnp.int32),
         )
         driver.state, _ = decode(
             driver.model,
             driver.state,
-            jnp.zeros((B, 1), dtype=jnp.int32),       # last_tokens
-            jnp.zeros((B,), dtype=jnp.int32),         # positions
-            jnp.zeros((B,), dtype=jnp.int32),         # valid_rows
-            jnp.zeros((B, NB), dtype=jnp.int32),      # block_tables
-            jnp.zeros((B,), dtype=jnp.int32),         # phys_blocks
-            jnp.zeros((B,), dtype=jnp.int32),         # slot_in_block
+            jnp.zeros((B, 1), dtype=jnp.int32),
+            jnp.zeros((B,), dtype=jnp.int32),
+            jnp.zeros((B,), dtype=jnp.int32),
+            jnp.zeros((B, NB), dtype=jnp.int32),
+            jnp.zeros((B,), dtype=jnp.int32),
+            jnp.zeros((B,), dtype=jnp.int32),
         )
     return time.perf_counter() - t0
 

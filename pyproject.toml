@@ -29,7 +29,7 @@ rocm = [
     "jax-rocm7-plugin==0.9.1.post3",
     "jax-rocm7-pjrt==0.9.1.post3",
 ]
-parity = [
+torch = [
     "torch>=2.3",
 ]
 

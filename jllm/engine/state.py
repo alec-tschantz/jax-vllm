@@ -1,4 +1,3 @@
-"""JAX-facing engine state and packed kernel wrappers."""
 import equinox as eqx
 from jax import Array
 from jax import numpy as jnp
@@ -24,12 +23,12 @@ def init_state(
 def prefill(
     model: DecoderOnlyModel,
     state: EngineState,
-    chunk_ids: Array,           # [B, C] int32
-    pos_starts: Array,          # [B] int32
-    block_tables: Array,        # [B, NB_MAX] int32
-    valid_tokens: Array,        # [B] int32
-    last_token_idx: Array,      # [B] int32
-    phys_blocks: Array,         # [B] int32
+    chunk_ids: Array,
+    pos_starts: Array,
+    block_tables: Array,
+    valid_tokens: Array,
+    last_token_idx: Array,
+    phys_blocks: Array,
 ) -> tuple[EngineState, Array]:
     next_toks, new_cache = prefill_step_jit(
         model, chunk_ids, state.cache, block_tables, pos_starts, valid_tokens, last_token_idx, phys_blocks
@@ -40,12 +39,12 @@ def prefill(
 def decode(
     model: DecoderOnlyModel,
     state: EngineState,
-    last_tokens: Array,      # [B, 1] int32
-    positions: Array,        # [B] int32
-    valid_rows: Array,       # [B] int32
-    block_tables: Array,     # [B, NB_MAX] int32
-    phys_block: Array,       # [B] int32
-    slot_in_block: Array,    # [B] int32
+    last_tokens: Array,
+    positions: Array,
+    valid_rows: Array,
+    block_tables: Array,
+    phys_block: Array,
+    slot_in_block: Array,
 ) -> tuple[EngineState, Array]:
     logits, new_cache = decode_step_cb_jit(
         model, last_tokens, state.cache, positions, valid_rows, block_tables, phys_block, slot_in_block

@@ -1,16 +1,5 @@
-"""FastAPI server exposing the jllm engine over HTTP.
 
-Run locally, or on a remote GPU host with a port-forwarded tunnel
-(e.g. `ssh -L 8080:localhost:8080 <host>`).
 
-Endpoints:
-- POST /generate            raw-prompt completion (streams SSE)
-- POST /v1/completions      OpenAI-compatible completion (raw prompt, no template)
-- POST /v1/chat/completions OpenAI-compatible chat (applies tokenizer chat template)
-- GET  /health
-"""
-# Apply JAX env vars (JAX_COMPILATION_CACHE_DIR, XLA_PYTHON_CLIENT_*) before
-# any jax import anywhere in the process. See jllm.config for the knob list.
 from jllm.config import JllmConfig, apply_jax_env
 _INITIAL_CFG = JllmConfig.from_env()
 apply_jax_env(_INITIAL_CFG)

@@ -1,17 +1,3 @@
-"""Paged-attention kernels: batched prefill + packed decode.
-
-Two kernels cover the hot path:
-
-- `prefill_step`: advances B prefilling slots by one `block_size` chunk each.
-  Each row writes into one fresh physical block, gathers the full prefix via
-  block_tables, and returns the next token from the last valid query position.
-- `decode_step_cb`: advances B decoding slots by one token each.
-
-Unused padded rows may target the sentinel block 0; those writes are harmless.
-
-This module is model-family agnostic. It only depends on the generic
-decoder-only interface defined in `jllm.model.common`.
-"""
 import equinox as eqx
 from jax import Array
 from jax import numpy as jnp
@@ -39,14 +25,14 @@ from .paged import (
 
 def attention_prefill(
     a: Attention,
-    hidden: Array,          # [B, C, D]
-    cos: Array,             # [B, C, D_head]
+    hidden: Array,
+    cos: Array,
     sin: Array,
     layer: PagedLayerCache,
-    q_pos: Array,           # [B, C] int32
-    valid_tokens: Array,    # [B] int32
-    block_tables: Array,    # [B, NB_MAX] int32
-    phys_blocks: Array,     # [B] int32
+    q_pos: Array,
+    valid_tokens: Array,
+    block_tables: Array,
+    phys_blocks: Array,
 ) -> tuple[Array, PagedLayerCache]:
     B, C, _ = hidden.shape
     q = linear(a.q_proj, hidden).reshape(B, C, a.num_heads, a.head_dim).transpose(0, 2, 1, 3)
@@ -102,13 +88,13 @@ def decoder_layer_prefill(
 
 def prefill_step(
     m: DecoderOnlyModel,
-    chunk_ids: Array,         # [B, C] int32
+    chunk_ids: Array,
     cache: PagedCache,
-    block_tables: Array,      # [B, NB_MAX] int32
-    pos_starts: Array,        # [B] int32
-    valid_tokens: Array,      # [B] int32
-    last_token_idx: Array,    # [B] int32
-    phys_blocks: Array,       # [B] int32
+    block_tables: Array,
+    pos_starts: Array,
+    valid_tokens: Array,
+    last_token_idx: Array,
+    phys_blocks: Array,
 ) -> tuple[Array, PagedCache]:
     _, C = chunk_ids.shape
     hidden = embed(m.embed_tokens, chunk_ids)
@@ -132,11 +118,11 @@ def attention_decode_cb(
     cos: Array,
     sin: Array,
     layer: PagedLayerCache,
-    positions: Array,       # [B] int32
-    valid_rows: Array,      # [B] int32
-    block_tables: Array,    # [B, NB_MAX] int32
-    phys_block: Array,      # [B] int32
-    slot_in_block: Array,   # [B] int32
+    positions: Array,
+    valid_rows: Array,
+    block_tables: Array,
+    phys_block: Array,
+    slot_in_block: Array,
 ) -> tuple[Array, PagedLayerCache]:
     B = hidden.shape[0]
     q = linear(a.q_proj, hidden).reshape(B, 1, a.num_heads, a.head_dim).transpose(0, 2, 1, 3)

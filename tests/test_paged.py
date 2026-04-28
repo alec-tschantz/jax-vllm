@@ -1,6 +1,5 @@
 import jax.numpy as jnp
 import numpy as np
-import pytest
 
 from jllm.engine.paged import (
     PagedLayerCache,
@@ -17,7 +16,7 @@ from jllm.engine.paged import (
 )
 
 
-# ---------- device-side primitives (unchanged behaviour) ----------
+# ---------- device-side primitives ----------
 
 
 def _empty_layer(num_blocks, block_size, H=2, D=4):

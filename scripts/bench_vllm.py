@@ -177,50 +177,99 @@ def _concurrent_row(
     }
 
 
-def _vllm_completion(url: str, model: str, prompt: str, max_tokens: int) -> dict:
+def _completion_body(
+    model: str,
+    prompt: str,
+    max_tokens: int,
+    *,
+    vllm_params: bool = False,
+) -> dict:
+    body = {
+        "model": model,
+        "prompt": prompt,
+        "max_tokens": max_tokens,
+        "temperature": 0.0,
+        "stream": False,
+    }
+    if vllm_params:
+        body.update({"top_p": 1.0, "repetition_penalty": 1.0})
+    return body
+
+
+def _chat_body(model: str, messages: list, max_tokens: int) -> dict:
+    return {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.0,
+        "stream": False,
+    }
+
+
+def _timed_completion(
+    url: str,
+    model: str,
+    prompt: str,
+    max_tokens: int,
+    *,
+    state: str,
+    vllm_params: bool = False,
+) -> dict:
     t0 = time.perf_counter()
     response = _post_json(
         f"{url}/v1/completions",
-        {
-            "model": model,
-            "prompt": prompt,
-            "max_tokens": max_tokens,
-            "temperature": 0.0,
-            "top_p": 1.0,
-            "repetition_penalty": 1.0,
-            "stream": False,
-        },
+        _completion_body(model, prompt, max_tokens, vllm_params=vllm_params),
     )
     total_s = time.perf_counter() - t0
+    n_tokens = response["usage"]["completion_tokens"]
     return {
         "text": response["choices"][0]["text"],
         "total_s": total_s,
-        "n_tokens": response["usage"]["completion_tokens"],
-        "tok_per_s": _tok_s(total_s, response["usage"]["completion_tokens"]),
-        "state": "warm",
+        "n_tokens": n_tokens,
+        "tok_per_s": _tok_s(total_s, n_tokens),
+        "state": state,
     }
 
 
-def _vllm_chat(url: str, model: str, messages: list, max_tokens: int) -> dict:
+def _timed_chat(
+    url: str,
+    model: str,
+    messages: list,
+    max_tokens: int,
+    *,
+    state: str,
+) -> dict:
     t0 = time.perf_counter()
     response = _post_json(
         f"{url}/v1/chat/completions",
-        {
-            "model": model,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": 0.0,
-            "stream": False,
-        },
+        _chat_body(model, messages, max_tokens),
     )
     total_s = time.perf_counter() - t0
+    n_tokens = response["usage"]["completion_tokens"]
     return {
         "text": response["choices"][0]["message"]["content"],
         "total_s": total_s,
-        "n_tokens": response["usage"]["completion_tokens"],
-        "tok_per_s": _tok_s(total_s, response["usage"]["completion_tokens"]),
-        "state": "warm",
+        "n_tokens": n_tokens,
+        "tok_per_s": _tok_s(total_s, n_tokens),
+        "state": state,
     }
+
+
+def _vllm_completion(url: str, model: str, prompt: str, max_tokens: int) -> dict:
+    return _timed_completion(url, model, prompt, max_tokens, state="warm", vllm_params=True)
+
+
+def _vllm_chat(url: str, model: str, messages: list, max_tokens: int) -> dict:
+    return _timed_chat(url, model, messages, max_tokens, state="warm")
+
+
+def _matching_prefix_chars(left: str, right: str) -> int:
+    count = 0
+    for l_char, r_char in zip(left, right):
+        if l_char != r_char:
+            break
+        count += 1
+    return count
 
 
 def _stats_delta(before: dict, after: dict) -> dict:
@@ -260,48 +309,10 @@ class HTTPJllm:
         return _safe_health(self.url).get("stats", {})
 
     def completion(self, prompt: str, max_tokens: int, state: str = "warm") -> dict:
-        t0 = time.perf_counter()
-        response = _post_json(
-            f"{self.url}/v1/completions",
-            {
-                "model": self.model_name,
-                "prompt": prompt,
-                "max_tokens": max_tokens,
-                "temperature": 0.0,
-                "stream": False,
-            },
-        )
-        total_s = time.perf_counter() - t0
-        n_tokens = response["usage"]["completion_tokens"]
-        return {
-            "text": response["choices"][0]["text"],
-            "total_s": total_s,
-            "n_tokens": n_tokens,
-            "tok_per_s": _tok_s(total_s, n_tokens),
-            "state": state,
-        }
+        return _timed_completion(self.url, self.model_name, prompt, max_tokens, state=state)
 
     def chat(self, messages: list, max_tokens: int, state: str = "warm") -> dict:
-        t0 = time.perf_counter()
-        response = _post_json(
-            f"{self.url}/v1/chat/completions",
-            {
-                "model": self.model_name,
-                "messages": messages,
-                "max_tokens": max_tokens,
-                "temperature": 0.0,
-                "stream": False,
-            },
-        )
-        total_s = time.perf_counter() - t0
-        n_tokens = response["usage"]["completion_tokens"]
-        return {
-            "text": response["choices"][0]["message"]["content"],
-            "total_s": total_s,
-            "n_tokens": n_tokens,
-            "tok_per_s": _tok_s(total_s, n_tokens),
-            "state": state,
-        }
+        return _timed_chat(self.url, self.model_name, messages, max_tokens, state=state)
 
     def generate_stream(self, prompt: str, max_tokens: int, state: str = "warm") -> dict:
         body = json.dumps({"prompt": prompt, "max_tokens": max_tokens, "stream": True}).encode()
@@ -487,12 +498,7 @@ def run_sequential(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dic
         )
         j_result = jllm.completion(prompt, args.max_new_tokens)
         if v_result is not None:
-            match_chars = 0
-            for left, right in zip(v_result["text"], j_result["text"]):
-                if left == right:
-                    match_chars += 1
-                else:
-                    break
+            match_chars = _matching_prefix_chars(v_result["text"], j_result["text"])
             exact_match = j_result["text"] == v_result["text"]
             prompts.append({
                 "prompt": prompt,
