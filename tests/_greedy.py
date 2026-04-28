@@ -1,4 +1,5 @@
 """Synchronous greedy helper for parity tests."""
+
 from typing import Optional
 
 import jax.numpy as jnp
@@ -30,7 +31,11 @@ def greedy(
         block_size=block_size,
         dtype=dtype,
     )
-    rid = eng.add_request(driver, list(prompt_ids), SamplingParams(max_new_tokens=max_new_tokens, eos_id=eos_id))
+    rid = eng.add_request(
+        driver,
+        list(prompt_ids),
+        SamplingParams(max_new_tokens=max_new_tokens, eos_id=eos_id),
+    )
     out: list[int] = []
     while eng.has_work(driver):
         for ev in eng.step(driver):

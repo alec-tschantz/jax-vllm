@@ -15,21 +15,24 @@ from jllm.engine.paged import (
     touch,
 )
 
-
 # ---------- device-side primitives ----------
 
 
 def _empty_layer(num_blocks, block_size, H=2, D=4):
     shape = (num_blocks, block_size, H, D)
-    return PagedLayerCache(k=jnp.zeros(shape, jnp.float32), v=jnp.zeros(shape, jnp.float32))
+    return PagedLayerCache(
+        k=jnp.zeros(shape, jnp.float32), v=jnp.zeros(shape, jnp.float32)
+    )
 
 
 def test_scatter_decode_then_gather():
     layer = _empty_layer(8, 4, 2, 4)
-    k_new = jnp.stack([
-        jnp.full((1, 2, 4), 1.0, dtype=jnp.float32),
-        jnp.full((1, 2, 4), 2.0, dtype=jnp.float32),
-    ])
+    k_new = jnp.stack(
+        [
+            jnp.full((1, 2, 4), 1.0, dtype=jnp.float32),
+            jnp.full((1, 2, 4), 2.0, dtype=jnp.float32),
+        ]
+    )
     v_new = k_new * 10.0
     phys_block = jnp.asarray([3, 5], jnp.int32)
     slot_in_block = jnp.asarray([2, 0], jnp.int32)

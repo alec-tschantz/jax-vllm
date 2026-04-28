@@ -37,7 +37,9 @@ def hf_model_fp32(parity_model_path: str):
     torch = pytest.importorskip("torch")
     from transformers import AutoModelForCausalLM
 
-    return AutoModelForCausalLM.from_pretrained(parity_model_path, dtype=torch.float32).eval()
+    return AutoModelForCausalLM.from_pretrained(
+        parity_model_path, dtype=torch.float32
+    ).eval()
 
 
 @pytest.fixture(scope="session")
@@ -45,4 +47,6 @@ def hf_model_bf16(parity_model_path: str):
     torch = pytest.importorskip("torch")
     from transformers import AutoModelForCausalLM
 
-    return AutoModelForCausalLM.from_pretrained(parity_model_path, dtype=torch.bfloat16).eval()
+    return AutoModelForCausalLM.from_pretrained(
+        parity_model_path, dtype=torch.bfloat16
+    ).eval()

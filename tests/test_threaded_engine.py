@@ -18,7 +18,9 @@ MAX_NEW = 6
 
 
 def test_threaded_requests_produce_correct_outputs(jx_model_fp32):
-    driver = engine.make_driver(jx_model_fp32, max_num_seqs=2, max_model_len=32, dtype=jnp.float32)
+    driver = engine.make_driver(
+        jx_model_fp32, max_num_seqs=2, max_model_len=32, dtype=jnp.float32
+    )
     engine.start(driver)
     try:
         solo_outputs: list[list[int]] = []
@@ -30,12 +32,16 @@ def test_threaded_requests_produce_correct_outputs(jx_model_fp32):
         results_lock = threading.Lock()
 
         def worker(idx: int, prompt: list[int]) -> None:
-            rid = engine.add_request(driver, prompt, SamplingParams(max_new_tokens=MAX_NEW))
+            rid = engine.add_request(
+                driver, prompt, SamplingParams(max_new_tokens=MAX_NEW)
+            )
             out = [ev.token for ev in engine.stream(driver, rid)]
             with results_lock:
                 results[idx] = out
 
-        threads = [threading.Thread(target=worker, args=(i, p)) for i, p in enumerate(PROMPTS)]
+        threads = [
+            threading.Thread(target=worker, args=(i, p)) for i, p in enumerate(PROMPTS)
+        ]
         for t in threads:
             t.start()
         for t in threads:

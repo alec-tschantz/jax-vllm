@@ -35,7 +35,9 @@ def init_runtime_state(max_num_seqs: int, nb_max: int) -> RuntimeState:
     )
 
 
-def with_cached_prefix(state: RuntimeState, slot: int, block_ids: list[int]) -> RuntimeState:
+def with_cached_prefix(
+    state: RuntimeState, slot: int, block_ids: list[int]
+) -> RuntimeState:
     positions = state.positions.copy()
     last_tokens = state.last_tokens.copy()
     block_tables = state.block_tables.copy()
@@ -45,10 +47,14 @@ def with_cached_prefix(state: RuntimeState, slot: int, block_ids: list[int]) -> 
         row[: len(block_ids)] = np.asarray(block_ids, dtype=np.int32)
     positions[slot] = 0
     last_tokens[slot, 0] = 0
-    return RuntimeState(positions=positions, last_tokens=last_tokens, block_tables=block_tables)
+    return RuntimeState(
+        positions=positions, last_tokens=last_tokens, block_tables=block_tables
+    )
 
 
-def with_block(state: RuntimeState, slot: int, logical_idx: int, block_id: int) -> RuntimeState:
+def with_block(
+    state: RuntimeState, slot: int, logical_idx: int, block_id: int
+) -> RuntimeState:
     block_tables = state.block_tables.copy()
     block_tables[slot, logical_idx] = block_id
     return RuntimeState(
@@ -58,7 +64,9 @@ def with_block(state: RuntimeState, slot: int, logical_idx: int, block_id: int) 
     )
 
 
-def with_decode_state(state: RuntimeState, slot: int, position: int, last_token: int) -> RuntimeState:
+def with_decode_state(
+    state: RuntimeState, slot: int, position: int, last_token: int
+) -> RuntimeState:
     positions = state.positions.copy()
     last_tokens = state.last_tokens.copy()
     positions[slot] = np.int32(position)
@@ -77,4 +85,6 @@ def without_slot(state: RuntimeState, slot: int) -> RuntimeState:
     positions[slot] = 0
     last_tokens[slot, 0] = 0
     block_tables[slot].fill(0)
-    return RuntimeState(positions=positions, last_tokens=last_tokens, block_tables=block_tables)
+    return RuntimeState(
+        positions=positions, last_tokens=last_tokens, block_tables=block_tables
+    )

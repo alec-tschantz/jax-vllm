@@ -47,11 +47,16 @@ def test_bench_json_output(tmp_path, monkeypatch):
     monkeypatch.setattr(bench, "HTTPJllm", lambda url, model_name: DummyJllm())
     monkeypatch.setattr(bench, "_safe_health", lambda url: {"status": "ok"})
     monkeypatch.setattr(bench, "_git_sha", lambda: "deadbeef")
-    monkeypatch.setattr(bench, "_runner_metadata", lambda: {"host": "gpu-test", "cwd": "/srv/jax-vllm"})
+    monkeypatch.setattr(
+        bench, "_runner_metadata", lambda: {"host": "gpu-test", "cwd": "/srv/jax-vllm"}
+    )
     monkeypatch.setattr(
         bench,
         "run_sequential",
-        lambda args, jllm, vllm_url, vllm_model: (0, {"mode": "sequential", "summary": {"jllm_tok_per_s": 1.0}}),
+        lambda args, jllm, vllm_url, vllm_model: (
+            0,
+            {"mode": "sequential", "summary": {"jllm_tok_per_s": 1.0}},
+        ),
     )
     out_path = tmp_path / "bench.json"
     monkeypatch.setattr(
@@ -77,7 +82,10 @@ def test_bench_json_output(tmp_path, monkeypatch):
     assert payload["metadata"]["runner"] == {"host": "gpu-test", "cwd": "/srv/jax-vllm"}
     assert payload["metadata"]["workload"] == "balanced"
     assert payload["metadata"]["jllm_stats_delta"]["decode_batches"] == 1
-    assert payload["metadata"]["token_metrics"]["budgeted"] == "num_requests * max_new_tokens"
+    assert (
+        payload["metadata"]["token_metrics"]["budgeted"]
+        == "num_requests * max_new_tokens"
+    )
     assert payload["result"]["summary"]["jllm_tok_per_s"] == 1.0
 
 
@@ -103,14 +111,23 @@ def test_concurrency_warmup_skips_bucket_one(monkeypatch):
     class DummyJllm:
         def completion(self, prompt: str, max_tokens: int, state: str = "warm"):
             calls.append(("jllm", state))
-            return {"text": "", "total_s": 0.01, "n_tokens": max_tokens, "tok_per_s": 100.0, "state": state}
+            return {
+                "text": "",
+                "total_s": 0.01,
+                "n_tokens": max_tokens,
+                "tok_per_s": 100.0,
+                "state": state,
+            }
 
-    args = SimpleNamespace(concurrency=[1, 4, 4], warmups=1, max_new_tokens=8, jllm_only=False)
+    args = SimpleNamespace(
+        concurrency=[1, 4, 4], warmups=1, max_new_tokens=8, jllm_only=False
+    )
 
     monkeypatch.setattr(
         bench,
         "_vllm_completion",
-        lambda url, model, prompt, max_tokens: calls.append(("vllm", "warmup")) or {
+        lambda url, model, prompt, max_tokens: calls.append(("vllm", "warmup"))
+        or {
             "text": "",
             "total_s": 0.01,
             "n_tokens": max_tokens,
@@ -135,12 +152,19 @@ def test_unique_prompt_warmup_deduplicates_prompts(monkeypatch):
     class DummyJllm:
         def completion(self, prompt: str, max_tokens: int, state: str = "warm"):
             calls.append(("jllm", prompt))
-            return {"text": "", "total_s": 0.01, "n_tokens": max_tokens, "tok_per_s": 100.0, "state": state}
+            return {
+                "text": "",
+                "total_s": 0.01,
+                "n_tokens": max_tokens,
+                "tok_per_s": 100.0,
+                "state": state,
+            }
 
     monkeypatch.setattr(
         bench,
         "_vllm_completion",
-        lambda url, model, prompt, max_tokens: calls.append(("vllm", prompt)) or {
+        lambda url, model, prompt, max_tokens: calls.append(("vllm", prompt))
+        or {
             "text": "",
             "total_s": 0.01,
             "n_tokens": max_tokens,
@@ -170,14 +194,18 @@ def test_unique_prompt_warmup_deduplicates_prompts(monkeypatch):
 def test_stats_delta_uses_zero_for_missing_keys():
     bench = _load_module(SCRIPTS_DIR / "bench_vllm.py", "bench_vllm_stats_test")
 
-    assert bench._stats_delta({"prefill_batches": 2, "decode_batches": 1}, {"decode_batches": 4}) == {
+    assert bench._stats_delta(
+        {"prefill_batches": 2, "decode_batches": 1}, {"decode_batches": 4}
+    ) == {
         "decode_batches": 3,
         "prefill_batches": -2,
     }
 
 
 def test_concurrent_row_tracks_observed_and_budget_tokens():
-    bench = _load_module(SCRIPTS_DIR / "bench_vllm.py", "bench_vllm_concurrent_row_test")
+    bench = _load_module(
+        SCRIPTS_DIR / "bench_vllm.py", "bench_vllm_concurrent_row_test"
+    )
 
     row = bench._concurrent_row(
         "jllm",

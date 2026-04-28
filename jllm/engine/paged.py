@@ -13,9 +13,6 @@ BlockHash = bytes
 SENTINEL_REF = 1 << 30
 
 
-
-
-
 class PagedLayerCache(eqx.Module):
     k: Array
     v: Array
@@ -32,14 +29,13 @@ def init_paged_cache(
     shape = (num_blocks, block_size, cfg.num_kv_heads, cfg.head_dim)
     return PagedCache(
         layers=[
-            PagedLayerCache(k=jnp.zeros(shape, dtype=dtype), v=jnp.zeros(shape, dtype=dtype))
+            PagedLayerCache(
+                k=jnp.zeros(shape, dtype=dtype), v=jnp.zeros(shape, dtype=dtype)
+            )
             for _ in range(cfg.num_hidden_layers)
         ],
         block_size=block_size,
     )
-
-
-
 
 
 def compute_block_hash(parent_hash: BlockHash, token_ids: Iterable[int]) -> BlockHash:
@@ -48,9 +44,6 @@ def compute_block_hash(parent_hash: BlockHash, token_ids: Iterable[int]) -> Bloc
     for tok in token_ids:
         h.update(struct.pack("<I", int(tok)))
     return h.digest()
-
-
-
 
 
 @dataclass
@@ -75,7 +68,6 @@ def make_manager(num_blocks: int) -> BlockManager:
         raise ValueError(f"num_blocks must be >= 2 (1 sentinel + >=1 usable)")
     pool = [KVCacheBlock(block_id=i) for i in range(num_blocks)]
     pool[0].ref_cnt = SENTINEL_REF
-
 
     for i in range(1, num_blocks - 1):
         pool[i].next_free = pool[i + 1]
@@ -154,9 +146,6 @@ def register_hash(mgr: BlockManager, block_id: int, block_hash: BlockHash) -> No
 
 def lookup(mgr: BlockManager, block_hash: BlockHash) -> Optional[int]:
     return mgr.hash_to_block.get(block_hash)
-
-
-
 
 
 def scatter_kv_decode(
