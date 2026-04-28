@@ -31,7 +31,14 @@ def prefill(
     phys_blocks: Array,
 ) -> tuple[EngineState, Array]:
     next_toks, new_cache = prefill_step_jit(
-        model, chunk_ids, state.cache, block_tables, pos_starts, valid_tokens, last_token_idx, phys_blocks
+        model,
+        chunk_ids,
+        state.cache,
+        block_tables,
+        pos_starts,
+        valid_tokens,
+        last_token_idx,
+        phys_blocks,
     )
     return EngineState(cache=new_cache), next_toks
 
@@ -47,7 +54,14 @@ def decode(
     slot_in_block: Array,
 ) -> tuple[EngineState, Array]:
     logits, new_cache = decode_step_cb_jit(
-        model, last_tokens, state.cache, positions, valid_rows, block_tables, phys_block, slot_in_block
+        model,
+        last_tokens,
+        state.cache,
+        positions,
+        valid_rows,
+        block_tables,
+        phys_block,
+        slot_in_block,
     )
     new_toks = jnp.argmax(logits[:, 0, :], axis=-1).astype(jnp.int32)
     return EngineState(cache=new_cache), new_toks

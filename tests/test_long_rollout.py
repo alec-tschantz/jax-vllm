@@ -14,6 +14,7 @@ PROMPTS = [
     "Once upon a time",
 ]
 
+
 @pytest.mark.parametrize("prompt", PROMPTS)
 def test_greedy_matches_hf_exactly(prompt, tokenizer, hf_model_fp32, jx_model_fp32):
     torch = pytest.importorskip("torch")

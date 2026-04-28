@@ -7,10 +7,10 @@ from jllm.engine.request import SamplingParams
 pytestmark = pytest.mark.engine
 
 PROMPTS = [
-    [785, 6722, 315, 9625, 374],              # "The capital of France is"
-    [750, 79683, 1445, 982],                  # "def fibonacci(n):"
-    [12522, 5193, 264, 882],                  # "Once upon a time"
-    [9454, 8420, 11, 1246, 646],              # "Yeah okay, how can"
+    [785, 6722, 315, 9625, 374],  # "The capital of France is"
+    [750, 79683, 1445, 982],  # "def fibonacci(n):"
+    [12522, 5193, 264, 882],  # "Once upon a time"
+    [9454, 8420, 11, 1246, 646],  # "Yeah okay, how can"
 ]
 MAX_NEW = 10
 
@@ -19,7 +19,10 @@ def _run_engine_fp32(model, prompts, max_num_seqs, max_model_len, max_new):
     driver = engine.make_driver(
         model, max_num_seqs=max_num_seqs, max_model_len=max_model_len, dtype=jnp.float32
     )
-    rids = [engine.add_request(driver, p, SamplingParams(max_new_tokens=max_new)) for p in prompts]
+    rids = [
+        engine.add_request(driver, p, SamplingParams(max_new_tokens=max_new))
+        for p in prompts
+    ]
     out: dict[int, list[int]] = {rid: [] for rid in rids}
     while engine.has_work(driver):
         for ev in engine.step(driver):
@@ -29,8 +32,12 @@ def _run_engine_fp32(model, prompts, max_num_seqs, max_model_len, max_new):
 
 def test_engine_is_deterministic(jx_model_fp32):
     """Running the engine twice with the same requests should produce identical tokens."""
-    first = _run_engine_fp32(jx_model_fp32, PROMPTS, max_num_seqs=2, max_model_len=32, max_new=MAX_NEW)
-    second = _run_engine_fp32(jx_model_fp32, PROMPTS, max_num_seqs=2, max_model_len=32, max_new=MAX_NEW)
+    first = _run_engine_fp32(
+        jx_model_fp32, PROMPTS, max_num_seqs=2, max_model_len=32, max_new=MAX_NEW
+    )
+    second = _run_engine_fp32(
+        jx_model_fp32, PROMPTS, max_num_seqs=2, max_model_len=32, max_new=MAX_NEW
+    )
     assert first == second
 
 
@@ -39,10 +46,18 @@ def test_slot_output_independent_of_batchmate(jx_model_fp32):
     Runs request 0 alongside request 1, then runs request 0 alongside request 2.
     The tokens emitted for request 0 must be identical in both runs."""
     with_peer_1 = _run_engine_fp32(
-        jx_model_fp32, [PROMPTS[0], PROMPTS[1]], max_num_seqs=2, max_model_len=32, max_new=MAX_NEW
+        jx_model_fp32,
+        [PROMPTS[0], PROMPTS[1]],
+        max_num_seqs=2,
+        max_model_len=32,
+        max_new=MAX_NEW,
     )
     with_peer_2 = _run_engine_fp32(
-        jx_model_fp32, [PROMPTS[0], PROMPTS[2]], max_num_seqs=2, max_model_len=32, max_new=MAX_NEW
+        jx_model_fp32,
+        [PROMPTS[0], PROMPTS[2]],
+        max_num_seqs=2,
+        max_model_len=32,
+        max_new=MAX_NEW,
     )
     assert with_peer_1[0] == with_peer_2[0], (
         f"request 0 output changed with different batchmate\n"
@@ -57,10 +72,12 @@ def test_engine_matches_solo_fp32(jx_model_fp32):
         jx_model_fp32, PROMPTS, max_num_seqs=2, max_model_len=32, max_new=MAX_NEW
     )
     for i, p in enumerate(PROMPTS):
-        solo = _run_engine_fp32(jx_model_fp32, [p], max_num_seqs=1, max_model_len=32, max_new=MAX_NEW)[0]
-        assert cb_outputs[i] == solo, (
-            f"request {i} diverges: cb={cb_outputs[i]} solo={solo}"
-        )
+        solo = _run_engine_fp32(
+            jx_model_fp32, [p], max_num_seqs=1, max_model_len=32, max_new=MAX_NEW
+        )[0]
+        assert (
+            cb_outputs[i] == solo
+        ), f"request {i} diverges: cb={cb_outputs[i]} solo={solo}"
 
 
 def test_prefix_caching_skips_extend_on_second_request(jx_model_fp32):
@@ -72,8 +89,12 @@ def test_prefix_caching_skips_extend_on_second_request(jx_model_fp32):
     prompt_32 = (PROMPTS[0] * 10)[:32]  # pad/truncate to exactly 32 tokens
 
     driver = engine.make_driver(
-        jx_model_fp32, max_num_seqs=1, max_model_len=48, max_prefill_len=32,
-        block_size=block_size, dtype=jnp.float32,
+        jx_model_fp32,
+        max_num_seqs=1,
+        max_model_len=48,
+        max_prefill_len=32,
+        block_size=block_size,
+        dtype=jnp.float32,
     )
 
     # First request: cold cache.
@@ -97,10 +118,12 @@ def test_prefix_caching_skips_extend_on_second_request(jx_model_fp32):
     warm_extend_calls = driver.stats.extend_calls
 
     assert out1 == out2, f"outputs diverge: cold={out1} warm={out2}"
-    assert cold_extend_calls >= 2, f"cold path should have run >=2 extend_step calls, got {cold_extend_calls}"
-    assert warm_extend_calls == 0, (
-        f"fully-cached prompt should skip all extend_step calls; got {warm_extend_calls}"
-    )
+    assert (
+        cold_extend_calls >= 2
+    ), f"cold path should have run >=2 extend_step calls, got {cold_extend_calls}"
+    assert (
+        warm_extend_calls == 0
+    ), f"fully-cached prompt should skip all extend_step calls; got {warm_extend_calls}"
 
 
 def test_chunked_prefill_runs_one_chunk_per_block(jx_model_fp32):
@@ -108,12 +131,29 @@ def test_chunked_prefill_runs_one_chunk_per_block(jx_model_fp32):
     calls. Regression guard: if someone fuses prefill back into one big kernel
     or chunks at the wrong granularity, this fails."""
     block_size = 16
-    prompt = [785, 6722, 315, 9625, 374, 750, 79683, 1445, 982, 9454, 8420, 11]  # 12 tokens
+    prompt = [
+        785,
+        6722,
+        315,
+        9625,
+        374,
+        750,
+        79683,
+        1445,
+        982,
+        9454,
+        8420,
+        11,
+    ]  # 12 tokens
     expected_chunks = (len(prompt) + block_size - 1) // block_size  # 1
 
     driver = engine.make_driver(
-        jx_model_fp32, max_num_seqs=1, max_model_len=32, max_prefill_len=16,
-        block_size=block_size, dtype=jnp.float32,
+        jx_model_fp32,
+        max_num_seqs=1,
+        max_model_len=32,
+        max_prefill_len=16,
+        block_size=block_size,
+        dtype=jnp.float32,
     )
     driver.stats.extend_calls = 0
     rid = engine.add_request(driver, prompt, SamplingParams(max_new_tokens=2))
@@ -128,8 +168,12 @@ def test_chunked_prefill_runs_one_chunk_per_block(jx_model_fp32):
     # Now a longer prompt that needs multiple chunks.
     prompt_long = (prompt * 3)[:32]  # exactly 2 full blocks
     driver2 = engine.make_driver(
-        jx_model_fp32, max_num_seqs=1, max_model_len=48, max_prefill_len=32,
-        block_size=block_size, dtype=jnp.float32,
+        jx_model_fp32,
+        max_num_seqs=1,
+        max_model_len=48,
+        max_prefill_len=32,
+        block_size=block_size,
+        dtype=jnp.float32,
     )
     driver2.stats.extend_calls = 0
     rid2 = engine.add_request(driver2, prompt_long, SamplingParams(max_new_tokens=2))
@@ -153,8 +197,12 @@ def test_partial_prefix_cache_hit_skips_only_cached_blocks(jx_model_fp32):
     prompt_b = prompt_a[:16] + (PROMPTS[1] * 10)[:16]
 
     driver = engine.make_driver(
-        jx_model_fp32, max_num_seqs=1, max_model_len=48, max_prefill_len=32,
-        block_size=block_size, dtype=jnp.float32,
+        jx_model_fp32,
+        max_num_seqs=1,
+        max_model_len=48,
+        max_prefill_len=32,
+        block_size=block_size,
+        dtype=jnp.float32,
     )
 
     # Admit A first; this populates block 0 (first 16 tokens of A) into the cache.

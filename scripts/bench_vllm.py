@@ -1,4 +1,5 @@
 """Unified jllm-vs-vLLM harness with optional JSON output."""
+
 import argparse
 from dataclasses import asdict
 import json
@@ -33,17 +34,20 @@ SHORT_PROMPTS = [
 LONG_PROMPTS = [
     (
         "Summarize the following engineering note in two bullets:\n"
-        + "We want stable throughput under mixed prompt lengths, predictable memory use, and repeatable benchmark output across runs. " * 12
+        + "We want stable throughput under mixed prompt lengths, predictable memory use, and repeatable benchmark output across runs. "
+        * 12
         + "\nSummary:"
     ),
     (
         "Continue this field report in the same style:\n"
-        + "At dusk the observatory logged increased thermal drift, a brief packet-loss burst on the telemetry link, and a slow recovery once the cooling loop stabilized. " * 10
+        + "At dusk the observatory logged increased thermal drift, a brief packet-loss burst on the telemetry link, and a slow recovery once the cooling loop stabilized. "
+        * 10
         + "\nContinuation:"
     ),
     (
         "Read this memo and answer with the most important tradeoff:\n"
-        + "The system should remain small and legible, but it also needs enough instrumentation to explain scheduler behavior, padding overhead, and compilation sensitivity under real traffic. " * 10
+        + "The system should remain small and legible, but it also needs enough instrumentation to explain scheduler behavior, padding overhead, and compilation sensitivity under real traffic. "
+        * 10
         + "\nTradeoff:"
     ),
 ]
@@ -74,7 +78,9 @@ def _post_json(url: str, body: dict, timeout: float = 600) -> dict:
 
 def _safe_health(url: str) -> dict:
     try:
-        return json.loads(urllib.request.urlopen(f"{url}/health", timeout=5).read().decode())
+        return json.loads(
+            urllib.request.urlopen(f"{url}/health", timeout=5).read().decode()
+        )
     except Exception:
         return {}
 
@@ -106,7 +112,13 @@ def _request_prompts(workload: str, num_requests: int) -> list[str]:
 
 def _prompt_summary(prompts: list[str]) -> dict:
     if not prompts:
-        return {"count": 0, "min_chars": 0, "median_chars": 0, "max_chars": 0, "unique_lengths": 0}
+        return {
+            "count": 0,
+            "min_chars": 0,
+            "median_chars": 0,
+            "max_chars": 0,
+            "unique_lengths": 0,
+        }
     lengths = sorted(len(prompt) for prompt in prompts)
     return {
         "count": len(prompts),
@@ -137,7 +149,9 @@ def _port_for_url(url: str) -> Optional[int]:
         return None
 
 
-def _lane_metadata(url: str, model: str, health: dict, lane_type: str, gpu: Optional[int]) -> dict:
+def _lane_metadata(
+    url: str, model: str, health: dict, lane_type: str, gpu: Optional[int]
+) -> dict:
     return {
         "url": url,
         "model": model,
@@ -256,7 +270,9 @@ def _timed_chat(
 
 
 def _vllm_completion(url: str, model: str, prompt: str, max_tokens: int) -> dict:
-    return _timed_completion(url, model, prompt, max_tokens, state="warm", vllm_params=True)
+    return _timed_completion(
+        url, model, prompt, max_tokens, state="warm", vllm_params=True
+    )
 
 
 def _vllm_chat(url: str, model: str, messages: list, max_tokens: int) -> dict:
@@ -301,7 +317,9 @@ class HTTPJllm:
             "backend": "http",
             "url": self.url,
             "model": self.model_name,
-            "attention_impl": self.health.get("attention_impl", os.environ.get("JLLM_ATTENTION_IMPL", "einsum")),
+            "attention_impl": self.health.get(
+                "attention_impl", os.environ.get("JLLM_ATTENTION_IMPL", "einsum")
+            ),
             "server_health": self.health,
         }
 
@@ -309,15 +327,23 @@ class HTTPJllm:
         return _safe_health(self.url).get("stats", {})
 
     def completion(self, prompt: str, max_tokens: int, state: str = "warm") -> dict:
-        return _timed_completion(self.url, self.model_name, prompt, max_tokens, state=state)
+        return _timed_completion(
+            self.url, self.model_name, prompt, max_tokens, state=state
+        )
 
     def chat(self, messages: list, max_tokens: int, state: str = "warm") -> dict:
         return _timed_chat(self.url, self.model_name, messages, max_tokens, state=state)
 
-    def generate_stream(self, prompt: str, max_tokens: int, state: str = "warm") -> dict:
-        body = json.dumps({"prompt": prompt, "max_tokens": max_tokens, "stream": True}).encode()
+    def generate_stream(
+        self, prompt: str, max_tokens: int, state: str = "warm"
+    ) -> dict:
+        body = json.dumps(
+            {"prompt": prompt, "max_tokens": max_tokens, "stream": True}
+        ).encode()
         req = urllib.request.Request(
-            f"{self.url}/generate", data=body, headers={"Content-Type": "application/json"},
+            f"{self.url}/generate",
+            data=body,
+            headers={"Content-Type": "application/json"},
         )
         t0 = time.perf_counter()
         ttft = None
@@ -393,7 +419,9 @@ class InProcJllm:
     def stop(self):
         self.eng.stop(self.driver)
 
-    def _run(self, ids: list[int], max_tokens: int, eos_id: Optional[int], state: str) -> dict:
+    def _run(
+        self, ids: list[int], max_tokens: int, eos_id: Optional[int], state: str
+    ) -> dict:
         t0 = time.perf_counter()
         request_id = self.eng.add_request(
             self.driver,
@@ -417,14 +445,24 @@ class InProcJllm:
         }
 
     def completion(self, prompt: str, max_tokens: int, state: str = "warm") -> dict:
-        return self._run(self.tok(prompt).input_ids, max_tokens, eos_id=None, state=state)
+        return self._run(
+            self.tok(prompt).input_ids, max_tokens, eos_id=None, state=state
+        )
 
     def chat(self, messages: list, max_tokens: int, state: str = "warm") -> dict:
-        prompt = self.tok.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
-        return self._run(self.tok(prompt).input_ids, max_tokens, eos_id=self.eos_id, state=state)
+        prompt = self.tok.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=False
+        )
+        return self._run(
+            self.tok(prompt).input_ids, max_tokens, eos_id=self.eos_id, state=state
+        )
 
-    def generate_stream(self, prompt: str, max_tokens: int, state: str = "warm") -> dict:
-        return self._run(self.tok(prompt).input_ids, max_tokens, eos_id=None, state=state)
+    def generate_stream(
+        self, prompt: str, max_tokens: int, state: str = "warm"
+    ) -> dict:
+        return self._run(
+            self.tok(prompt).input_ids, max_tokens, eos_id=None, state=state
+        )
 
 
 def _warmup(args, jllm, vllm_url: str, vllm_model: str) -> None:
@@ -452,7 +490,9 @@ def _warmup_concurrency_levels(
     for concurrency in sorted(set(args.concurrency)):
         if concurrency <= 1:
             continue
-        prompts = (pool_prompts * ((concurrency // len(pool_prompts)) + 1))[:concurrency]
+        prompts = (pool_prompts * ((concurrency // len(pool_prompts)) + 1))[
+            :concurrency
+        ]
 
         def vllm_fn(prompt: str):
             return _vllm_completion(vllm_url, vllm_model, prompt, max_new)
@@ -493,20 +533,23 @@ def run_sequential(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dic
     prompts: list[dict] = []
     for prompt in _prompt_pool(args.workload):
         v_result = (
-            None if args.jllm_only
+            None
+            if args.jllm_only
             else _vllm_completion(vllm_url, vllm_model, prompt, args.max_new_tokens)
         )
         j_result = jllm.completion(prompt, args.max_new_tokens)
         if v_result is not None:
             match_chars = _matching_prefix_chars(v_result["text"], j_result["text"])
             exact_match = j_result["text"] == v_result["text"]
-            prompts.append({
-                "prompt": prompt,
-                "vllm": v_result,
-                "jllm": j_result,
-                "match_chars": match_chars,
-                "exact_match": exact_match,
-            })
+            prompts.append(
+                {
+                    "prompt": prompt,
+                    "vllm": v_result,
+                    "jllm": j_result,
+                    "match_chars": match_chars,
+                    "exact_match": exact_match,
+                }
+            )
             print(
                 f"prompt={prompt!r:50s}  "
                 f"vLLM {v_result['total_s']:.2f}s ({v_result['tok_per_s']:.1f} tok/s)  "
@@ -529,12 +572,16 @@ def run_sequential(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dic
         total_vllm_s = sum(row["vllm"]["total_s"] for row in prompts)
         total_vllm_toks = sum(row["vllm"]["n_tokens"] for row in prompts)
         exact_matches = sum(1 for row in prompts if row.get("exact_match"))
-        print(f"TOTAL vLLM: {total_vllm_s:.2f}s  {total_vllm_toks} tok  {_tok_s(total_vllm_s, total_vllm_toks):.1f} tok/s")
+        print(
+            f"TOTAL vLLM: {total_vllm_s:.2f}s  {total_vllm_toks} tok  {_tok_s(total_vllm_s, total_vllm_toks):.1f} tok/s"
+        )
     else:
         total_vllm_s = 0.0
         total_vllm_toks = 0
         exact_matches = 0
-    print(f"TOTAL jllm: {total_jllm_s:.2f}s  {total_jllm_toks} tok  {_tok_s(total_jllm_s, total_jllm_toks):.1f} tok/s")
+    print(
+        f"TOTAL jllm: {total_jllm_s:.2f}s  {total_jllm_toks} tok  {_tok_s(total_jllm_s, total_jllm_toks):.1f} tok/s"
+    )
     if not args.jllm_only:
         print(f"exact text matches: {exact_matches}/{len(prompts)}")
 
@@ -568,12 +615,17 @@ def run_concurrent(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dic
     warmed_prompts = _warmup_unique_prompts(
         jllm, vllm_url, vllm_model, prompts, skip_vllm=args.jllm_only
     )
-    warmed_concurrency = _warmup_concurrency_levels(args, jllm, vllm_url, vllm_model, prompts)
+    warmed_concurrency = _warmup_concurrency_levels(
+        args, jllm, vllm_url, vllm_model, prompts
+    )
     print("  warmed", flush=True)
     if warmed_concurrency:
         print(f"  concurrency buckets warmed: {warmed_concurrency}", flush=True)
     print(f"  unique prompts warmed: {warmed_prompts}", flush=True)
-    print(f"  workload={args.workload} prompt_chars={_prompt_summary(prompts)}", flush=True)
+    print(
+        f"  workload={args.workload} prompt_chars={_prompt_summary(prompts)}",
+        flush=True,
+    )
 
     print(
         f"{'system':<6} {'C':>4} {'N':>4} {'wall_s':>8} {'obs_tok':>8} "
@@ -581,13 +633,18 @@ def run_concurrent(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dic
     )
     rows: list[dict] = []
     for concurrency in args.concurrency:
+
         def vllm_fn(prompt: str):
             return _vllm_completion(vllm_url, vllm_model, prompt, args.max_new_tokens)
 
         def jllm_fn(prompt: str):
             return jllm.completion(prompt, args.max_new_tokens)
 
-        lanes = [("jllm", jllm_fn)] if args.jllm_only else [("vllm", vllm_fn), ("jllm", jllm_fn)]
+        lanes = (
+            [("jllm", jllm_fn)]
+            if args.jllm_only
+            else [("vllm", vllm_fn), ("jllm", jllm_fn)]
+        )
         for label, fn in lanes:
             t0 = time.perf_counter()
             results = []
@@ -595,7 +652,9 @@ def run_concurrent(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dic
                 for response in pool.map(fn, prompts):
                     results.append(response)
             wall_s = time.perf_counter() - t0
-            row = _concurrent_row(label, concurrency, results, wall_s, args.max_new_tokens)
+            row = _concurrent_row(
+                label, concurrency, results, wall_s, args.max_new_tokens
+            )
             rows.append(row)
             print(
                 f"{label:<6} {concurrency:>4} {len(results):>4} {wall_s:>8.2f} "
@@ -640,7 +699,9 @@ def run_chat(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, dict]:
         }
 
     print("=== vllm ===", flush=True)
-    vllm_turns = run_side(lambda messages, n: _vllm_chat(vllm_url, vllm_model, messages, n))
+    vllm_turns = run_side(
+        lambda messages, n: _vllm_chat(vllm_url, vllm_model, messages, n)
+    )
     for idx, response in enumerate(vllm_turns):
         print(f"[t{idx}] ({response['total_s']:.1f}s)\n{response['text']}\n")
 
@@ -673,7 +734,10 @@ def run_prefix_cache(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, d
     prefix = prefix[: args.prefix_len * 4]
     suffixes = [f" Q{i}: What's the main point?" for i in range(args.num_requests)]
 
-    print(f"prefix_cache: prefix ~{args.prefix_len} tokens, {args.num_requests} requests", flush=True)
+    print(
+        f"prefix_cache: prefix ~{args.prefix_len} tokens, {args.num_requests} requests",
+        flush=True,
+    )
 
     jllm_rows = []
     print("=== jllm (warms its cache on req0) ===")
@@ -689,35 +753,65 @@ def run_prefix_cache(args, jllm, vllm_url: str, vllm_model: str) -> tuple[int, d
 
     vllm_rows = []
     if not args.jllm_only:
-        print("\n=== vllm (configure --enable-prefix-caching for a fair comparison) ===")
+        print(
+            "\n=== vllm (configure --enable-prefix-caching for a fair comparison) ==="
+        )
         for idx, suffix in enumerate(suffixes):
-            result = _vllm_completion(vllm_url, vllm_model, prefix + suffix, args.max_new_tokens)
+            result = _vllm_completion(
+                vllm_url, vllm_model, prefix + suffix, args.max_new_tokens
+            )
             result["state"] = "cold" if idx == 0 else "warm"
             vllm_rows.append(result)
-            print(f"  vllm req{idx:02d}  total={result['total_s']:.2f}s  tok/s={result['tok_per_s']:.1f}", flush=True)
+            print(
+                f"  vllm req{idx:02d}  total={result['total_s']:.2f}s  tok/s={result['tok_per_s']:.1f}",
+                flush=True,
+            )
 
-    warm_ttfts = [row["ttft_s"] for row in jllm_rows[1:] if row.get("ttft_s") is not None]
+    warm_ttfts = [
+        row["ttft_s"] for row in jllm_rows[1:] if row.get("ttft_s") is not None
+    ]
     summary = {
         "jllm_cold_ttft_s": jllm_rows[0].get("ttft_s"),
-        "jllm_warm_ttft_median_s": statistics.median(warm_ttfts) if warm_ttfts else None,
+        "jllm_warm_ttft_median_s": (
+            statistics.median(warm_ttfts) if warm_ttfts else None
+        ),
     }
     if summary["jllm_cold_ttft_s"] is not None:
         print(f"\njllm cold TTFT: {summary['jllm_cold_ttft_s']:.3f}s")
     if summary["jllm_warm_ttft_median_s"] is not None:
         print(f"jllm warm TTFT median: {summary['jllm_warm_ttft_median_s']:.3f}s")
 
-    return 0, {"mode": "prefix_cache", "jllm": jllm_rows, "vllm": vllm_rows, "summary": summary}
+    return 0, {
+        "mode": "prefix_cache",
+        "jllm": jllm_rows,
+        "vllm": vllm_rows,
+        "summary": summary,
+    }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["sequential", "concurrent", "chat", "prefix_cache"], default="sequential")
-    parser.add_argument("--workload", choices=sorted(WORKLOAD_PROMPTS), default="balanced",
-                        help="Prompt workload profile used by sequential/concurrent modes.")
-    parser.add_argument("--jllm-url", default=None,
-                        help="Hit a running jllm server at this URL. If omitted, spin up in-process.")
-    parser.add_argument("--jllm-model-name", default="qwen32b",
-                        help="Model name to put in OpenAI-shaped requests (HTTP mode only)")
+    parser.add_argument(
+        "--mode",
+        choices=["sequential", "concurrent", "chat", "prefix_cache"],
+        default="sequential",
+    )
+    parser.add_argument(
+        "--workload",
+        choices=sorted(WORKLOAD_PROMPTS),
+        default="balanced",
+        help="Prompt workload profile used by sequential/concurrent modes.",
+    )
+    parser.add_argument(
+        "--jllm-url",
+        default=None,
+        help="Hit a running jllm server at this URL. If omitted, spin up in-process.",
+    )
+    parser.add_argument(
+        "--jllm-model-name",
+        default="qwen32b",
+        help="Model name to put in OpenAI-shaped requests (HTTP mode only)",
+    )
     parser.add_argument("--vllm-url", default="http://127.0.0.1:8020")
     parser.add_argument("--vllm-model-name", default="qwen32b")
     parser.add_argument(
@@ -733,16 +827,44 @@ def main() -> int:
     parser.add_argument("--max-new-tokens", type=int, default=40)
     parser.add_argument("--num-requests", type=int, default=32)
     parser.add_argument("--concurrency", type=int, nargs="+", default=[1, 4, 16])
-    parser.add_argument("--prefix-len", type=int, default=256,
-                        help="prefix_cache mode: approximate tokens of shared prefix")
-    parser.add_argument("--json-out", default=None,
-                        help="Optional path to write structured benchmark results as JSON.")
-    parser.add_argument("--label", default=None, help="Optional label stored in the JSON metadata.")
-    parser.add_argument("--warmups", type=int, default=1, help="Number of warmup requests to run before timed modes.")
-    parser.add_argument("--jllm-gpu", type=int, default=None, help="Optional GPU id for the jllm lane metadata.")
-    parser.add_argument("--vllm-gpu", type=int, default=None, help="Optional GPU id for the vLLM lane metadata.")
-    parser.add_argument("--jllm-lane-type", choices=["stable", "experimental"], default="stable")
-    parser.add_argument("--vllm-lane-type", choices=["stable", "experimental"], default="stable")
+    parser.add_argument(
+        "--prefix-len",
+        type=int,
+        default=256,
+        help="prefix_cache mode: approximate tokens of shared prefix",
+    )
+    parser.add_argument(
+        "--json-out",
+        default=None,
+        help="Optional path to write structured benchmark results as JSON.",
+    )
+    parser.add_argument(
+        "--label", default=None, help="Optional label stored in the JSON metadata."
+    )
+    parser.add_argument(
+        "--warmups",
+        type=int,
+        default=1,
+        help="Number of warmup requests to run before timed modes.",
+    )
+    parser.add_argument(
+        "--jllm-gpu",
+        type=int,
+        default=None,
+        help="Optional GPU id for the jllm lane metadata.",
+    )
+    parser.add_argument(
+        "--vllm-gpu",
+        type=int,
+        default=None,
+        help="Optional GPU id for the vLLM lane metadata.",
+    )
+    parser.add_argument(
+        "--jllm-lane-type", choices=["stable", "experimental"], default="stable"
+    )
+    parser.add_argument(
+        "--vllm-lane-type", choices=["stable", "experimental"], default="stable"
+    )
     args = parser.parse_args()
 
     if args.jllm_url is not None:
@@ -761,7 +883,9 @@ def main() -> int:
         elif args.mode == "chat":
             rc, result = run_chat(args, jllm, args.vllm_url, args.vllm_model_name)
         elif args.mode == "prefix_cache":
-            rc, result = run_prefix_cache(args, jllm, args.vllm_url, args.vllm_model_name)
+            rc, result = run_prefix_cache(
+                args, jllm, args.vllm_url, args.vllm_model_name
+            )
         else:
             raise AssertionError(f"unknown mode {args.mode}")
         stats_after = _safe_stats(jllm)

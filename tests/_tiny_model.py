@@ -1,7 +1,15 @@
 import numpy as np
 import jax.numpy as jnp
 
-from jllm.model.common import Attention, DecoderLayer, Embedding, Linear, RMSNorm, RotaryEmbedding, SwiGLU
+from jllm.model.common import (
+    Attention,
+    DecoderLayer,
+    Embedding,
+    Linear,
+    RMSNorm,
+    RotaryEmbedding,
+    SwiGLU,
+)
 from jllm.model.qwen2 import Qwen2Config, Qwen2Model
 
 
@@ -31,10 +39,21 @@ def make_tiny_model() -> Qwen2Model:
         layers.append(
             DecoderLayer(
                 self_attn=Attention(
-                    q_proj=Linear(weight=_rand(rng, cfg.hidden_size, cfg.hidden_size), bias=_rand(rng, cfg.hidden_size)),
-                    k_proj=Linear(weight=_rand(rng, kv_hidden, cfg.hidden_size), bias=_rand(rng, kv_hidden)),
-                    v_proj=Linear(weight=_rand(rng, kv_hidden, cfg.hidden_size), bias=_rand(rng, kv_hidden)),
-                    o_proj=Linear(weight=_rand(rng, cfg.hidden_size, cfg.hidden_size), bias=None),
+                    q_proj=Linear(
+                        weight=_rand(rng, cfg.hidden_size, cfg.hidden_size),
+                        bias=_rand(rng, cfg.hidden_size),
+                    ),
+                    k_proj=Linear(
+                        weight=_rand(rng, kv_hidden, cfg.hidden_size),
+                        bias=_rand(rng, kv_hidden),
+                    ),
+                    v_proj=Linear(
+                        weight=_rand(rng, kv_hidden, cfg.hidden_size),
+                        bias=_rand(rng, kv_hidden),
+                    ),
+                    o_proj=Linear(
+                        weight=_rand(rng, cfg.hidden_size, cfg.hidden_size), bias=None
+                    ),
                     q_norm=None,
                     k_norm=None,
                     num_heads=cfg.num_heads,
@@ -42,19 +61,36 @@ def make_tiny_model() -> Qwen2Model:
                     head_dim=cfg.head_dim,
                 ),
                 mlp=SwiGLU(
-                    gate_proj=Linear(weight=_rand(rng, cfg.intermediate_size, cfg.hidden_size), bias=None),
-                    up_proj=Linear(weight=_rand(rng, cfg.intermediate_size, cfg.hidden_size), bias=None),
-                    down_proj=Linear(weight=_rand(rng, cfg.hidden_size, cfg.intermediate_size), bias=None),
+                    gate_proj=Linear(
+                        weight=_rand(rng, cfg.intermediate_size, cfg.hidden_size),
+                        bias=None,
+                    ),
+                    up_proj=Linear(
+                        weight=_rand(rng, cfg.intermediate_size, cfg.hidden_size),
+                        bias=None,
+                    ),
+                    down_proj=Linear(
+                        weight=_rand(rng, cfg.hidden_size, cfg.intermediate_size),
+                        bias=None,
+                    ),
                 ),
-                input_layernorm=RMSNorm(weight=jnp.ones((cfg.hidden_size,), dtype=jnp.float32), eps=cfg.rms_norm_eps),
-                post_attention_layernorm=RMSNorm(weight=jnp.ones((cfg.hidden_size,), dtype=jnp.float32), eps=cfg.rms_norm_eps),
+                input_layernorm=RMSNorm(
+                    weight=jnp.ones((cfg.hidden_size,), dtype=jnp.float32),
+                    eps=cfg.rms_norm_eps,
+                ),
+                post_attention_layernorm=RMSNorm(
+                    weight=jnp.ones((cfg.hidden_size,), dtype=jnp.float32),
+                    eps=cfg.rms_norm_eps,
+                ),
             )
         )
 
     return Qwen2Model(
         embed_tokens=Embedding(weight=_rand(rng, cfg.vocab_size, cfg.hidden_size)),
         layers=layers,
-        norm=RMSNorm(weight=jnp.ones((cfg.hidden_size,), dtype=jnp.float32), eps=cfg.rms_norm_eps),
+        norm=RMSNorm(
+            weight=jnp.ones((cfg.hidden_size,), dtype=jnp.float32), eps=cfg.rms_norm_eps
+        ),
         rotary_emb=RotaryEmbedding(dim=cfg.head_dim, theta=cfg.rope_theta),
         lm_head=Linear(weight=_rand(rng, cfg.vocab_size, cfg.hidden_size), bias=None),
         cfg=cfg,

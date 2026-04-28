@@ -5,7 +5,15 @@ from typing import Callable, Union
 from jax import numpy as jnp
 from safetensors import safe_open
 
-from .common import Attention, DecoderLayer, Embedding, Linear, RMSNorm, RotaryEmbedding, SwiGLU
+from .common import (
+    Attention,
+    DecoderLayer,
+    Embedding,
+    Linear,
+    RMSNorm,
+    RotaryEmbedding,
+    SwiGLU,
+)
 from .qwen2 import Qwen2Config, Qwen2Model
 from .qwen3 import Qwen3Config, Qwen3Model
 
@@ -25,6 +33,7 @@ def _load_tensors(path: Path) -> dict:
 def _arr_fn(tensors: dict, dtype) -> Callable[[str], jnp.ndarray]:
     def arr(name: str) -> jnp.ndarray:
         return tensors[name].astype(dtype)
+
     return arr
 
 
@@ -79,7 +88,9 @@ def load_qwen2(path: "str | Path", dtype=jnp.bfloat16) -> Qwen2Model:
                 ),
                 mlp=_mlp(arr, f"{p}.mlp"),
                 input_layernorm=_rms(arr, f"{p}.input_layernorm", cfg.rms_norm_eps),
-                post_attention_layernorm=_rms(arr, f"{p}.post_attention_layernorm", cfg.rms_norm_eps),
+                post_attention_layernorm=_rms(
+                    arr, f"{p}.post_attention_layernorm", cfg.rms_norm_eps
+                ),
             )
         )
 
@@ -122,7 +133,9 @@ def load_qwen3(path: "str | Path", dtype=jnp.bfloat16) -> Qwen3Model:
                 ),
                 mlp=_mlp(arr, f"{p}.mlp"),
                 input_layernorm=_rms(arr, f"{p}.input_layernorm", cfg.rms_norm_eps),
-                post_attention_layernorm=_rms(arr, f"{p}.post_attention_layernorm", cfg.rms_norm_eps),
+                post_attention_layernorm=_rms(
+                    arr, f"{p}.post_attention_layernorm", cfg.rms_norm_eps
+                ),
             )
         )
 

@@ -74,9 +74,13 @@ def make_driver(
     if max_prefill_len > max_model_len:
         raise ValueError("max_prefill_len must be <= max_model_len")
     if max_model_len % block_size != 0:
-        raise ValueError(f"max_model_len ({max_model_len}) must be a multiple of block_size ({block_size})")
+        raise ValueError(
+            f"max_model_len ({max_model_len}) must be a multiple of block_size ({block_size})"
+        )
     if max_prefill_len % block_size != 0:
-        raise ValueError(f"max_prefill_len ({max_prefill_len}) must be a multiple of block_size ({block_size})")
+        raise ValueError(
+            f"max_prefill_len ({max_prefill_len}) must be a multiple of block_size ({block_size})"
+        )
 
     nb_max = max_model_len // block_size
     worst_case = 1 + max_num_seqs * nb_max
@@ -111,7 +115,9 @@ def add_request(
     _raise_if_failed(driver)
     sp = sampling or SamplingParams()
     if len(prompt_ids) > driver.max_prefill_len:
-        raise ValueError(f"prompt too long for max_prefill_len={driver.max_prefill_len}")
+        raise ValueError(
+            f"prompt too long for max_prefill_len={driver.max_prefill_len}"
+        )
     if len(prompt_ids) + sp.max_new_tokens > driver.max_model_len:
         raise ValueError("prompt+max_new exceeds max_model_len")
     with driver.id_lock:
@@ -136,7 +142,9 @@ def stream(driver: Driver, request_id: int) -> Iterator[StepEvent]:
             ev = q.get(timeout=_STREAM_POLL)
         except queue.Empty:
             _raise_if_failed(driver)
-            if driver.stop_event.is_set() and (driver.thread is None or not driver.thread.is_alive()):
+            if driver.stop_event.is_set() and (
+                driver.thread is None or not driver.thread.is_alive()
+            ):
                 raise RuntimeError("engine stopped before request finished")
             continue
         yield ev
@@ -155,7 +163,6 @@ def step(driver: Driver) -> list[StepEvent]:
     driver.stats.scheduler_loops += 1
     events = _admit(driver)
 
-
     events.extend(_prefill_batch(driver))
     events.extend(_decode(driver))
     return events
@@ -166,18 +173,13 @@ def start(driver: Driver) -> None:
         return
     driver.thread_error = None
     driver.stop_event.clear()
-    driver.thread = threading.Thread(target=_driver_loop, args=(driver,), name="jllm-engine", daemon=True)
+    driver.thread = threading.Thread(
+        target=_driver_loop, args=(driver,), name="jllm-engine", daemon=True
+    )
     driver.thread.start()
 
 
 def prewarm(driver: Driver) -> float:
-
-
-
-
-
-
-
 
     bs = driver.block_size
     t0 = time.perf_counter()
@@ -285,7 +287,9 @@ def _admit(driver: Driver) -> list[StepEvent]:
         except queue.Empty:
             break
 
-        cached = take_cached_prefix(driver.block_manager, req.prompt_ids, driver.block_size)
+        cached = take_cached_prefix(
+            driver.block_manager, req.prompt_ids, driver.block_size
+        )
         pos_start = len(cached.block_ids) * driver.block_size
         slot = SlotState(
             slot=slot_id,
@@ -333,7 +337,9 @@ def _prefill_batch(driver: Driver) -> list[StepEvent]:
     for idx, slot in enumerate(active_slots):
         phys_block = alloc_new(driver.block_manager)
         slot.blocks.append(phys_block)
-        driver.runtime = with_block(driver.runtime, slot.slot, slot.filled_blocks, phys_block)
+        driver.runtime = with_block(
+            driver.runtime, slot.slot, slot.filled_blocks, phys_block
+        )
 
         prompt_len = len(slot.request.prompt_ids)
         tokens_in_chunk = min(bs, prompt_len - slot.next_prefill_pos)
@@ -343,7 +349,9 @@ def _prefill_batch(driver: Driver) -> list[StepEvent]:
         pos_starts[idx] = slot.next_prefill_pos
         phys_blocks[idx] = phys_block
         used_blocks = slot.filled_blocks + 1
-        block_tables[idx, :used_blocks] = driver.runtime.block_tables[slot.slot, :used_blocks]
+        block_tables[idx, :used_blocks] = driver.runtime.block_tables[
+            slot.slot, :used_blocks
+        ]
         valid_tokens[idx] = tokens_in_chunk
         last_token_idx[idx] = max(tokens_in_chunk - 1, 0)
 
@@ -372,7 +380,9 @@ def _prefill_batch(driver: Driver) -> list[StepEvent]:
                 driver.block_manager,
                 int(phys_blocks[idx]),
                 parent_hash,
-                slot.request.prompt_ids[slot.next_prefill_pos : slot.next_prefill_pos + bs],
+                slot.request.prompt_ids[
+                    slot.next_prefill_pos : slot.next_prefill_pos + bs
+                ],
             )
             slot.hashes.append(block_hash)
 
@@ -382,7 +392,9 @@ def _prefill_batch(driver: Driver) -> list[StepEvent]:
             continue
 
         first_tok = int(next_toks_np[idx])
-        driver.runtime = with_decode_state(driver.runtime, slot.slot, len(slot.request.prompt_ids), first_tok)
+        driver.runtime = with_decode_state(
+            driver.runtime, slot.slot, len(slot.request.prompt_ids), first_tok
+        )
         slot.phase = "decoding"
 
         slot.request.output_ids.append(first_tok)
@@ -403,7 +415,9 @@ def _decode(driver: Driver) -> list[StepEvent]:
     bs = driver.block_size
     nb_bucket = _bucket_ge(
         driver.context_buckets,
-        max(int(driver.runtime.positions[slot.slot]) // bs + 1 for slot in active_slots),
+        max(
+            int(driver.runtime.positions[slot.slot]) // bs + 1 for slot in active_slots
+        ),
     )
 
     last_tokens = np.zeros((bucket, 1), dtype=np.int32)
@@ -419,7 +433,9 @@ def _decode(driver: Driver) -> list[StepEvent]:
         if logical_idx >= len(slot.blocks):
             new_block = alloc_new(driver.block_manager)
             slot.blocks.append(new_block)
-            driver.runtime = with_block(driver.runtime, slot.slot, logical_idx, new_block)
+            driver.runtime = with_block(
+                driver.runtime, slot.slot, logical_idx, new_block
+            )
 
         positions[idx] = position
         valid_rows[idx] = 1
@@ -427,7 +443,9 @@ def _decode(driver: Driver) -> list[StepEvent]:
         phys_blocks[idx] = slot.blocks[logical_idx]
         slot_in_block[idx] = position % bs
         used_blocks = logical_idx + 1
-        block_tables[idx, :used_blocks] = driver.runtime.block_tables[slot.slot, :used_blocks]
+        block_tables[idx, :used_blocks] = driver.runtime.block_tables[
+            slot.slot, :used_blocks
+        ]
 
     driver.state, new_toks = decode(
         driver.model,
@@ -449,7 +467,9 @@ def _decode(driver: Driver) -> list[StepEvent]:
     for idx, slot in enumerate(active_slots):
         tok = int(new_toks_np[idx])
         slot.request.output_ids.append(tok)
-        driver.runtime = with_decode_state(driver.runtime, slot.slot, int(positions[idx]) + 1, tok)
+        driver.runtime = with_decode_state(
+            driver.runtime, slot.slot, int(positions[idx]) + 1, tok
+        )
         driver.stats.emitted_tokens += 1
 
         new_pos = int(positions[idx]) + 1

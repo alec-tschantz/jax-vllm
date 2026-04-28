@@ -65,11 +65,15 @@ class Qwen3Model(eqx.Module):
     cfg: Qwen3Config
 
 
-def attention(a: Attention, hidden: Array, cos: Array, sin: Array, mask: Array) -> Array:
+def attention(
+    a: Attention, hidden: Array, cos: Array, sin: Array, mask: Array
+) -> Array:
     return decoder_attention(a, hidden, cos, sin, mask)
 
 
-def decoder_layer(d: DecoderLayer, hidden: Array, cos: Array, sin: Array, mask: Array) -> Array:
+def decoder_layer(
+    d: DecoderLayer, hidden: Array, cos: Array, sin: Array, mask: Array
+) -> Array:
     return decoder_layer_forward(d, hidden, cos, sin, mask)
 
 

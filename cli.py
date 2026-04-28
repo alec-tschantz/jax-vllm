@@ -14,6 +14,7 @@ Commands at the prompt:
     /reset   clear conversation history
     /quit    exit
 """
+
 import argparse
 import json
 import sys
@@ -30,13 +31,15 @@ from rich.text import Text
 
 def _post_chat_stream(url: str, model: str, messages: list, max_tokens: int):
     """Stream /v1/chat/completions. Yields {'delta': str, 'finished': bool}."""
-    body = json.dumps({
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": 0.0,
-        "stream": True,
-    }).encode()
+    body = json.dumps(
+        {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.0,
+            "stream": True,
+        }
+    ).encode()
     req = urllib.request.Request(
         f"{url}/v1/chat/completions",
         data=body,
@@ -57,18 +60,26 @@ def _post_chat_stream(url: str, model: str, messages: list, max_tokens: int):
             yield {"delta": delta, "finished": finished}
 
 
-def _panel_for(transcript: str, current_prompt: str, current_reply: str, stats: str, done: bool) -> Group:
+def _panel_for(
+    transcript: str, current_prompt: str, current_reply: str, stats: str, done: bool
+) -> Group:
     title = "[green]done[/]" if done else "[yellow]streaming[/]"
     panels = []
     if transcript:
-        panels.append(Panel(Text(transcript, style="dim"), title="history", border_style="blue"))
-    panels.append(Panel(Text(current_prompt, style="cyan"), title="you", border_style="cyan"))
-    panels.append(Panel(
-        Text(current_reply or " ", style="white"),
-        title=title,
-        subtitle=stats,
-        border_style="green" if done else "yellow",
-    ))
+        panels.append(
+            Panel(Text(transcript, style="dim"), title="history", border_style="blue")
+        )
+    panels.append(
+        Panel(Text(current_prompt, style="cyan"), title="you", border_style="cyan")
+    )
+    panels.append(
+        Panel(
+            Text(current_reply or " ", style="white"),
+            title=title,
+            subtitle=stats,
+            border_style="green" if done else "yellow",
+        )
+    )
     return Group(*panels)
 
 
@@ -88,12 +99,18 @@ def _format_transcript(messages: list) -> str:
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--url", default="http://localhost:8080")
-    p.add_argument("--model", default=None,
-                   help="Model name in the /v1/chat/completions payload. If omitted, "
-                        "derived from the server's /health response.")
+    p.add_argument(
+        "--model",
+        default=None,
+        help="Model name in the /v1/chat/completions payload. If omitted, "
+        "derived from the server's /health response.",
+    )
     p.add_argument("--max-tokens", type=int, default=1536)
-    p.add_argument("--system", default=None,
-                   help="Optional system prompt prepended to every conversation")
+    p.add_argument(
+        "--system",
+        default=None,
+        help="Optional system prompt prepended to every conversation",
+    )
     args = p.parse_args()
 
     console = Console()
@@ -110,9 +127,12 @@ def main():
                 Text.assemble(
                     ("jllm chat\n", "bold cyan"),
                     (f"model: {health.get('model', '?')}\n", "dim"),
-                    (f"max_num_seqs={health.get('max_num_seqs')}  "
-                     f"max_model_len={health.get('max_model_len')}  "
-                     f"max_prefill_len={health.get('max_prefill_len')}\n", "dim"),
+                    (
+                        f"max_num_seqs={health.get('max_num_seqs')}  "
+                        f"max_model_len={health.get('max_model_len')}  "
+                        f"max_prefill_len={health.get('max_prefill_len')}\n",
+                        "dim",
+                    ),
                     ("commands: /reset  /quit", "dim"),
                 ),
                 border_style="cyan",
@@ -160,7 +180,9 @@ def main():
                 console=console,
                 refresh_per_second=20,
             ) as live:
-                for ev in _post_chat_stream(args.url, args.model, messages, args.max_tokens):
+                for ev in _post_chat_stream(
+                    args.url, args.model, messages, args.max_tokens
+                ):
                     piece = ev["delta"]
                     reply += piece
                     n += 1 if piece else 0
@@ -168,9 +190,13 @@ def main():
                         ttft = time.perf_counter() - t0
                     elapsed = time.perf_counter() - t0
                     tok_s = n / elapsed if elapsed > 0 else 0.0
-                    stats = (f"[dim]{n} tok · {tok_s:.1f} tok/s · "
-                             f"ttft {ttft or 0:.2f}s · {elapsed:.1f}s[/]")
-                    live.update(_panel_for(transcript, user_in, reply, stats, ev["finished"]))
+                    stats = (
+                        f"[dim]{n} tok · {tok_s:.1f} tok/s · "
+                        f"ttft {ttft or 0:.2f}s · {elapsed:.1f}s[/]"
+                    )
+                    live.update(
+                        _panel_for(transcript, user_in, reply, stats, ev["finished"])
+                    )
                     if ev["finished"]:
                         break
         except urllib.error.URLError as e:

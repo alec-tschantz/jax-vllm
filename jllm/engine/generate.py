@@ -23,6 +23,7 @@ from .paged import (
     scatter_kv_prefill_batch,
 )
 
+
 def attention_prefill(
     a: Attention,
     hidden: Array,
@@ -35,9 +36,21 @@ def attention_prefill(
     phys_blocks: Array,
 ) -> tuple[Array, PagedLayerCache]:
     B, C, _ = hidden.shape
-    q = linear(a.q_proj, hidden).reshape(B, C, a.num_heads, a.head_dim).transpose(0, 2, 1, 3)
-    k_new = linear(a.k_proj, hidden).reshape(B, C, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
-    v_new = linear(a.v_proj, hidden).reshape(B, C, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
+    q = (
+        linear(a.q_proj, hidden)
+        .reshape(B, C, a.num_heads, a.head_dim)
+        .transpose(0, 2, 1, 3)
+    )
+    k_new = (
+        linear(a.k_proj, hidden)
+        .reshape(B, C, a.num_kv_heads, a.head_dim)
+        .transpose(0, 2, 1, 3)
+    )
+    v_new = (
+        linear(a.v_proj, hidden)
+        .reshape(B, C, a.num_kv_heads, a.head_dim)
+        .transpose(0, 2, 1, 3)
+    )
     q, k_new = maybe_qk_norm(a, q, k_new)
     q, k_new = apply_rope(q, k_new, cos, sin)
 
@@ -61,14 +74,24 @@ def attention_prefill(
         q_lens=q_lens,
         k_lens=k_lens,
     )
-    query_mask = (jnp.arange(C, dtype=jnp.int32)[None, :] < q_lens[:, None])[:, None, :, None]
+    query_mask = (jnp.arange(C, dtype=jnp.int32)[None, :] < q_lens[:, None])[
+        :, None, :, None
+    ]
     out = jnp.where(query_mask, out, 0)
     out = out.transpose(0, 2, 1, 3).reshape(B, C, -1)
     return linear(a.o_proj, out), new_layer
 
 
 def decoder_layer_prefill(
-    d: DecoderLayer, hidden, cos, sin, layer, q_pos, valid_tokens, block_tables, phys_blocks,
+    d: DecoderLayer,
+    hidden,
+    cos,
+    sin,
+    layer,
+    q_pos,
+    valid_tokens,
+    block_tables,
+    phys_blocks,
 ):
     h, new_layer = attention_prefill(
         d.self_attn,
@@ -103,7 +126,15 @@ def prefill_step(
     new_layers: list[PagedLayerCache] = []
     for layer, layer_cache in zip(m.layers, cache.layers):
         hidden, layer_cache = decoder_layer_prefill(
-            layer, hidden, cos, sin, layer_cache, q_pos, valid_tokens, block_tables, phys_blocks
+            layer,
+            hidden,
+            cos,
+            sin,
+            layer_cache,
+            q_pos,
+            valid_tokens,
+            block_tables,
+            phys_blocks,
         )
         new_layers.append(layer_cache)
     hidden = rms_norm(m.norm, hidden)
@@ -125,15 +156,29 @@ def attention_decode_cb(
     slot_in_block: Array,
 ) -> tuple[Array, PagedLayerCache]:
     B = hidden.shape[0]
-    q = linear(a.q_proj, hidden).reshape(B, 1, a.num_heads, a.head_dim).transpose(0, 2, 1, 3)
-    k_new = linear(a.k_proj, hidden).reshape(B, 1, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
-    v_new = linear(a.v_proj, hidden).reshape(B, 1, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
+    q = (
+        linear(a.q_proj, hidden)
+        .reshape(B, 1, a.num_heads, a.head_dim)
+        .transpose(0, 2, 1, 3)
+    )
+    k_new = (
+        linear(a.k_proj, hidden)
+        .reshape(B, 1, a.num_kv_heads, a.head_dim)
+        .transpose(0, 2, 1, 3)
+    )
+    v_new = (
+        linear(a.v_proj, hidden)
+        .reshape(B, 1, a.num_kv_heads, a.head_dim)
+        .transpose(0, 2, 1, 3)
+    )
     q, k_new = maybe_qk_norm(a, q, k_new)
     q, k_new = apply_rope(q, k_new, cos, sin)
 
     k_scatter = k_new.transpose(0, 2, 1, 3)
     v_scatter = v_new.transpose(0, 2, 1, 3)
-    new_layer = scatter_kv_decode(layer, k_scatter, v_scatter, phys_block, slot_in_block)
+    new_layer = scatter_kv_decode(
+        layer, k_scatter, v_scatter, phys_block, slot_in_block
+    )
 
     k_all, v_all = gather_kv(new_layer, block_tables)
     k_all = k_all.transpose(0, 2, 1, 3)
@@ -169,8 +214,16 @@ def decoder_layer_decode_cb(
     slot_in_block,
 ):
     h, new_layer = attention_decode_cb(
-        d.self_attn, rms_norm(d.input_layernorm, hidden), cos, sin, layer,
-        positions, valid_rows, block_tables, phys_block, slot_in_block,
+        d.self_attn,
+        rms_norm(d.input_layernorm, hidden),
+        cos,
+        sin,
+        layer,
+        positions,
+        valid_rows,
+        block_tables,
+        phys_block,
+        slot_in_block,
     )
     hidden = hidden + h
     hidden = hidden + swiglu(d.mlp, rms_norm(d.post_attention_layernorm, hidden))
@@ -207,7 +260,9 @@ def decode_step_cb(
         )
         new_layers.append(layer_cache)
     hidden = rms_norm(m.norm, hidden)
-    return linear(m.lm_head, hidden), PagedCache(layers=new_layers, block_size=cache.block_size)
+    return linear(m.lm_head, hidden), PagedCache(
+        layers=new_layers, block_size=cache.block_size
+    )
 
 
 prefill_step_jit = eqx.filter_jit(prefill_step, donate="all-except-first")

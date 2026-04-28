@@ -7,9 +7,6 @@ from jax import Array, nn
 from jax import numpy as jnp
 
 
-
-
-
 class Embedding(eqx.Module):
     weight: Array
 
@@ -33,9 +30,6 @@ class KVCacheConfig(Protocol):
     num_hidden_layers: int
     num_kv_heads: int
     head_dim: int
-
-
-
 
 
 def embed(e: Embedding, ids: Array) -> Array:
@@ -72,9 +66,6 @@ def apply_rope(q: Array, k: Array, cos: Array, sin: Array) -> tuple[Array, Array
     return q * cos + _rotate_half(q) * sin, k * cos + _rotate_half(k) * sin
 
 
-
-
-
 class SwiGLU(eqx.Module):
     gate_proj: Linear
     up_proj: Linear
@@ -83,9 +74,6 @@ class SwiGLU(eqx.Module):
 
 def swiglu(d: SwiGLU, x: Array) -> Array:
     return linear(d.down_proj, nn.silu(linear(d.gate_proj, x)) * linear(d.up_proj, x))
-
-
-
 
 
 class Attention(eqx.Module):
@@ -123,11 +111,25 @@ def maybe_qk_norm(a: Attention, q: Array, k: Array) -> tuple[Array, Array]:
     return q, k
 
 
-def decoder_attention(a: Attention, hidden: Array, cos: Array, sin: Array, mask: Array) -> Array:
+def decoder_attention(
+    a: Attention, hidden: Array, cos: Array, sin: Array, mask: Array
+) -> Array:
     B, T, _ = hidden.shape
-    q = linear(a.q_proj, hidden).reshape(B, T, a.num_heads, a.head_dim).transpose(0, 2, 1, 3)
-    k = linear(a.k_proj, hidden).reshape(B, T, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
-    v = linear(a.v_proj, hidden).reshape(B, T, a.num_kv_heads, a.head_dim).transpose(0, 2, 1, 3)
+    q = (
+        linear(a.q_proj, hidden)
+        .reshape(B, T, a.num_heads, a.head_dim)
+        .transpose(0, 2, 1, 3)
+    )
+    k = (
+        linear(a.k_proj, hidden)
+        .reshape(B, T, a.num_kv_heads, a.head_dim)
+        .transpose(0, 2, 1, 3)
+    )
+    v = (
+        linear(a.v_proj, hidden)
+        .reshape(B, T, a.num_kv_heads, a.head_dim)
+        .transpose(0, 2, 1, 3)
+    )
     q, k = maybe_qk_norm(a, q, k)
     q, k = apply_rope(q, k, cos, sin)
     out = attention_kernel(q, k, v, mask, a.head_dim, a.num_heads, a.num_kv_heads)
@@ -135,8 +137,12 @@ def decoder_attention(a: Attention, hidden: Array, cos: Array, sin: Array, mask:
     return linear(a.o_proj, out)
 
 
-def decoder_layer_forward(d: DecoderLayer, hidden: Array, cos: Array, sin: Array, mask: Array) -> Array:
-    hidden = hidden + decoder_attention(d.self_attn, rms_norm(d.input_layernorm, hidden), cos, sin, mask)
+def decoder_layer_forward(
+    d: DecoderLayer, hidden: Array, cos: Array, sin: Array, mask: Array
+) -> Array:
+    hidden = hidden + decoder_attention(
+        d.self_attn, rms_norm(d.input_layernorm, hidden), cos, sin, mask
+    )
     hidden = hidden + swiglu(d.mlp, rms_norm(d.post_attention_layernorm, hidden))
     return hidden
 
@@ -162,9 +168,6 @@ def decoder_only_forward(
         hidden = decoder_layer_forward(layer, hidden, cos, sin, mask)
     hidden = rms_norm(m.norm, hidden)
     return linear(m.lm_head, hidden)
-
-
-
 
 
 def _attn_einsum(q: Array, k: Array, v: Array, mask: Array, head_dim: int) -> Array:
@@ -197,7 +200,9 @@ def _repeat_kv_heads(
     return jnp.repeat(k, rep, axis=1), jnp.repeat(v, rep, axis=1)
 
 
-def causal_mask_from_lens(q_lens: Array, k_lens: Array, max_q: int, max_k: int) -> Array:
+def causal_mask_from_lens(
+    q_lens: Array, k_lens: Array, max_q: int, max_k: int
+) -> Array:
     q_idx = jnp.arange(max_q, dtype=jnp.int32)[None, :, None]
     k_idx = jnp.arange(max_k, dtype=jnp.int32)[None, None, :]
     q_lens = q_lens.astype(jnp.int32)[:, None, None]
@@ -207,10 +212,6 @@ def causal_mask_from_lens(q_lens: Array, k_lens: Array, max_q: int, max_k: int) 
     k_valid = k_idx < k_lens
     causal = k_idx <= (start + q_idx)
     return (q_valid & k_valid & causal)[:, None, :, :]
-
-
-
-
 
 
 ATTENTION_IMPL = os.environ.get("JLLM_ATTENTION_IMPL", "einsum").lower()
@@ -236,7 +237,13 @@ def attention_kernel_causal(
 
 
 def attention_kernel(
-    q: Array, k: Array, v: Array, mask: Array, head_dim: int, num_heads: int, num_kv_heads: int
+    q: Array,
+    k: Array,
+    v: Array,
+    mask: Array,
+    head_dim: int,
+    num_heads: int,
+    num_kv_heads: int,
 ) -> Array:
     if ATTENTION_IMPL == "sdpa":
 

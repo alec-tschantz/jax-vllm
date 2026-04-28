@@ -71,7 +71,11 @@ def test_prefill_stats_track_active_slots_and_padding(active_size, expected_padd
 
     for offset in range(active_size):
         base = 1 + 4 * offset
-        eng.add_request(driver, [base, base + 1, base + 2, base + 3], SamplingParams(max_new_tokens=2))
+        eng.add_request(
+            driver,
+            [base, base + 1, base + 2, base + 3],
+            SamplingParams(max_new_tokens=2),
+        )
 
     eng.step(driver)
 
@@ -94,9 +98,27 @@ def test_decode_uses_active_batch(monkeypatch):
     seen: list[int] = []
     real_decode = eng.decode
 
-    def recording_decode(model, state, last_tokens, positions, valid_rows, block_tables, phys_block, slot_in_block):
+    def recording_decode(
+        model,
+        state,
+        last_tokens,
+        positions,
+        valid_rows,
+        block_tables,
+        phys_block,
+        slot_in_block,
+    ):
         seen.append(int(last_tokens.shape[0]))
-        return real_decode(model, state, last_tokens, positions, valid_rows, block_tables, phys_block, slot_in_block)
+        return real_decode(
+            model,
+            state,
+            last_tokens,
+            positions,
+            valid_rows,
+            block_tables,
+            phys_block,
+            slot_in_block,
+        )
 
     monkeypatch.setattr(eng, "decode", recording_decode)
     eng.add_request(driver, [1, 2, 3, 4], SamplingParams(max_new_tokens=2))
@@ -127,7 +149,11 @@ def test_decode_stats_track_active_slots_and_padding(active_size, expected_paddi
 
     for offset in range(active_size):
         base = 1 + 4 * offset
-        eng.add_request(driver, [base, base + 1, base + 2, base + 3], SamplingParams(max_new_tokens=2))
+        eng.add_request(
+            driver,
+            [base, base + 1, base + 2, base + 3],
+            SamplingParams(max_new_tokens=2),
+        )
 
     eng.step(driver)
     eng.step(driver)
@@ -158,9 +184,27 @@ def test_scheduler_prefills_before_decode_when_both_are_ready(monkeypatch):
     real_decode = eng.decode
     real_prefill = eng.prefill
 
-    def recording_decode(model, state, last_tokens, positions, valid_rows, block_tables, phys_block, slot_in_block):
+    def recording_decode(
+        model,
+        state,
+        last_tokens,
+        positions,
+        valid_rows,
+        block_tables,
+        phys_block,
+        slot_in_block,
+    ):
         order.append("decode")
-        return real_decode(model, state, last_tokens, positions, valid_rows, block_tables, phys_block, slot_in_block)
+        return real_decode(
+            model,
+            state,
+            last_tokens,
+            positions,
+            valid_rows,
+            block_tables,
+            phys_block,
+            slot_in_block,
+        )
 
     def recording_prefill(
         model,
@@ -257,9 +301,27 @@ def test_decode_uses_live_context_bucket(monkeypatch):
     seen: list[int] = []
     real_decode = eng.decode
 
-    def recording_decode(model, state, last_tokens, positions, valid_rows, block_tables, phys_block, slot_in_block):
+    def recording_decode(
+        model,
+        state,
+        last_tokens,
+        positions,
+        valid_rows,
+        block_tables,
+        phys_block,
+        slot_in_block,
+    ):
         seen.append(int(block_tables.shape[1]))
-        return real_decode(model, state, last_tokens, positions, valid_rows, block_tables, phys_block, slot_in_block)
+        return real_decode(
+            model,
+            state,
+            last_tokens,
+            positions,
+            valid_rows,
+            block_tables,
+            phys_block,
+            slot_in_block,
+        )
 
     monkeypatch.setattr(eng, "decode", recording_decode)
     eng.add_request(driver, [1, 2, 3, 4], SamplingParams(max_new_tokens=2))
